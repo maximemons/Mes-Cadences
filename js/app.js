@@ -309,6 +309,42 @@ function hydrateImages(root) {
 }
 
 /* =========================================================
+   Boîte de confirmation
+   (remplace confirm(), bloqué ou ignoré dans certaines applis installées et navigateurs intégrés)
+   ========================================================= */
+
+function confirmDialog(message, { confirmLabel = "Confirmer", danger = false } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.className = "dialog-backdrop";
+    wrap.innerHTML = `
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-describedby="dialog-msg">
+        <p id="dialog-msg" class="dialog-msg">${esc(message)}</p>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-ghost" data-no>Annuler</button>
+          <button type="button" class="btn ${danger ? "btn-danger" : "btn-primary"}" data-yes>${esc(confirmLabel)}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add("is-open"));
+    const done = value => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.classList.remove("is-open");
+      setTimeout(() => wrap.remove(), 180);
+      resolve(value);
+    };
+    const onKey = e => {
+      if (e.key === "Escape") { e.stopImmediatePropagation(); done(false); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    wrap.addEventListener("click", e => { if (e.target === wrap) done(false); });
+    $("[data-no]", wrap).addEventListener("click", () => done(false));
+    $("[data-yes]", wrap).addEventListener("click", () => done(true));
+    $("[data-yes]", wrap).focus();
+  });
+}
+
+/* =========================================================
    Panneaux (bottom sheets) avec gestion du bouton retour
    ========================================================= */
 
@@ -357,15 +393,18 @@ function destroySheet(entry) {
 window.addEventListener("popstate", () => {
   const top = sheetStack[sheetStack.length - 1];
   if (!top) return;
-  if (!top.force && top.isDirty && top.isDirty() && !confirm("Fermer sans enregistrer les modifications ?")) {
+  if (!top.force && top.isDirty && top.isDirty()) {
+    // On remet l'entrée d'historique du panneau, puis on demande confirmation
     history.pushState({ mcSheet: sheetStack.length }, "");
+    confirmDialog("Fermer sans enregistrer les modifications ?", { confirmLabel: "Fermer", danger: true })
+      .then(ok => { if (ok) top.close(); });
     return;
   }
   destroySheet(top);
 });
 
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && sheetStack.length) history.back();
+  if (e.key === "Escape" && sheetStack.length && !document.querySelector(".dialog-backdrop")) history.back();
 });
 
 /* =========================================================
@@ -394,7 +433,12 @@ function setHeader({ title, kicker = "", back = null, actions = [] }) {
 function setFab(config) {
   const fab = $("#fab");
   if (!config) { fab.classList.add("hidden"); fab.onclick = null; return; }
-  fab.innerHTML = `<i class="fa-solid ${config.icon || "fa-plus"}"></i><span>${esc(config.label)}</span>`;
+  fab.classList.toggle("fab--round", !!config.iconOnly);
+  fab.setAttribute("aria-label", config.label);
+  fab.title = config.label;
+  fab.innerHTML = config.iconOnly
+    ? `<i class="fa-solid ${config.icon || "fa-plus"}" aria-hidden="true"></i>`
+    : `<i class="fa-solid ${config.icon || "fa-plus"}" aria-hidden="true"></i><span>${esc(config.label)}</span>`;
   fab.classList.remove("hidden");
   fab.onclick = config.onClick;
 }
@@ -620,7 +664,7 @@ function renderSport(sport) {
     back: "#/",
     actions: [{ icon: "fa-pen", label: "Modifier le sport", onClick: () => openSportEditor(sport) }]
   });
-  setFab({ label: "Nouvelle séance", onClick: () => openSessionEditor(sport) });
+  setFab({ label: "Nouvelle séance", iconOnly: true, onClick: () => openSessionEditor(sport) });
 
   const t = todayIdx();
   const list = sessionsOf(sport.id).sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -686,10 +730,17 @@ function renderSport(sport) {
           </div>` : ""}
       </section>
 
-      ${!list.length ? `<p class="empty-hint">Ajoute ta première séance avec le bouton « Nouvelle séance ».</p>` : ""}
+      ${!list.length ? `<p class="empty-hint">Ajoute ta première séance avec le bouton +.</p>` : ""}
+
+      <button type="button" class="btn btn-danger-ghost btn-block sport-delete" data-delete-sport>
+        <i class="fa-solid fa-trash"></i> Supprimer ce sport
+      </button>
     </div>`;
 
   $("[data-edit-refs]").addEventListener("click", () => openRefsEditor(sport));
+  $("[data-delete-sport]").addEventListener("click", async () => {
+    if (await confirmSportDeletion(sport)) leaveSportThenDelete(sport);
+  });
   $$(".cadence-day").forEach(a => a.addEventListener("click", e => {
     e.preventDefault();
     const target = document.getElementById(`day-${a.dataset.day}`);
@@ -741,8 +792,8 @@ function renderSession(sport, session) {
   const view = $("#view");
   hydrateImages(view);
   $("[data-edit-session]", view)?.addEventListener("click", () => openSessionEditor(sport, session));
-  $("[data-reset]", view)?.addEventListener("click", () => {
-    if (!confirm("Effacer les séries validées aujourd’hui pour cette séance ?")) return;
+  $("[data-reset]", view)?.addEventListener("click", async () => {
+    if (!await confirmDialog("Effacer les séries validées aujourd’hui pour cette séance ?", { confirmLabel: "Remettre à zéro" })) return;
     setProgress(session.id, {});
     render();
   });
@@ -1003,16 +1054,30 @@ function openSportEditor(sport = null) {
         }
       });
 
-      $("[data-delete]", el)?.addEventListener("click", () => {
-        const msg = count
-          ? `Supprimer « ${sport.name} » et ses ${count} séance${count > 1 ? "s" : ""} ? Cette action est définitive.`
-          : `Supprimer « ${sport.name} » ? Cette action est définitive.`;
-        if (!confirm(msg)) return;
-        deleteSport(sport);
-        entry.close(() => { location.hash = "#/"; });
+      $("[data-delete]", el)?.addEventListener("click", async () => {
+        if (!await confirmSportDeletion(sport)) return;
+        // On ferme le panneau et on quitte la page du sport AVANT de supprimer,
+        // pour que l'historique et l'affichage restent cohérents.
+        entry.close(() => {
+          leaveSportThenDelete(sport);
+        });
       });
     }
   });
+}
+
+function confirmSportDeletion(sport) {
+  const count = sessionsOf(sport.id).length;
+  const msg = count
+    ? `Supprimer « ${sport.name} » et ses ${count} séance${count > 1 ? "s" : ""} ? Cette action est définitive.`
+    : `Supprimer « ${sport.name} » ? Cette action est définitive.`;
+  return confirmDialog(msg, { confirmLabel: "Supprimer", danger: true });
+}
+
+function leaveSportThenDelete(sport) {
+  const { sportId } = parseRoute();
+  if (sportId === sport.id) replaceHash("#/");
+  setTimeout(() => deleteSport(sport), 0);
 }
 
 function deleteSport(sport) {
@@ -1067,8 +1132,8 @@ function openRefsEditor(sport) {
     isDirty: () => JSON.stringify(read()) !== JSON.stringify(initial),
     onMount(el, entry) {
       rowsEl = $("[data-rows]", el);
-      const bindRemove = row => $("[data-remove]", row).addEventListener("click", () => {
-        if (used.has(row.dataset.refId) && !confirm("Ce repère est utilisé dans tes séances. Le supprimer quand même ?")) return;
+      const bindRemove = row => $("[data-remove]", row).addEventListener("click", async () => {
+        if (used.has(row.dataset.refId) && !await confirmDialog("Ce repère est utilisé dans tes séances. Le supprimer quand même ?", { confirmLabel: "Supprimer", danger: true })) return;
         row.remove();
       });
       $$(".ref-row[data-ref-id]", rowsEl).forEach(bindRemove);
@@ -1256,9 +1321,9 @@ function openSessionEditor(sport, session = null) {
         const id = block.dataset.exId;
         if (!images.has(id)) images.set(id, { imageId: null, data: null, removed: false });
 
-        $("[data-remove]", block).addEventListener("click", () => {
+        $("[data-remove]", block).addEventListener("click", async () => {
           const name = $('[data-f="name"]', block).value.trim();
-          if (name && !confirm(`Supprimer « ${name} » ?`)) return;
+          if (name && !await confirmDialog(`Supprimer l’exercice « ${name} » ?`, { confirmLabel: "Supprimer", danger: true })) return;
           block.remove();
         });
         $$("[data-move]", block).forEach(btn => btn.addEventListener("click", () => {
@@ -1369,13 +1434,17 @@ function openSessionEditor(sport, session = null) {
         }
       });
 
-      $("[data-delete]", el)?.addEventListener("click", () => {
-        if (!confirm(`Supprimer la séance « ${session.name} » ? Cette action est définitive.`)) return;
-        const batch = writeBatch(db);
-        (session.exercises || []).forEach(ex => { if (ex.imageId) batch.delete(userDoc("images", ex.imageId)); });
-        batch.delete(userDoc("sessions", session.id));
-        persist(batch.commit(), "Séance supprimée");
-        entry.close(() => { location.hash = `#/sport/${sport.id}`; });
+      $("[data-delete]", el)?.addEventListener("click", async () => {
+        if (!await confirmDialog(`Supprimer la séance « ${session.name} » ? Cette action est définitive.`, { confirmLabel: "Supprimer", danger: true })) return;
+        entry.close(() => {
+          replaceHash(`#/sport/${sport.id}`);
+          setTimeout(() => {
+            const batch = writeBatch(db);
+            (session.exercises || []).forEach(ex => { if (ex.imageId) batch.delete(userDoc("images", ex.imageId)); });
+            batch.delete(userDoc("sessions", session.id));
+            persist(batch.commit(), "Séance supprimée");
+          }, 0);
+        });
       });
     }
   });

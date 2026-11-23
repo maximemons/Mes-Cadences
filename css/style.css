@@ -212,6 +212,7 @@ img { max-width: 100%; display: block; }
   box-shadow: 0 10px 30px -8px rgba(20, 27, 45, .45);
 }
 .fab:active { transform: scale(.97); }
+.fab--round { width: 60px; height: 60px; padding: 0; justify-content: center; border-radius: 20px; font-size: 1.5rem; }
 @media (min-width: 700px) { .fab { right: calc(50% - 320px + 16px); } }
 
 /* ---------- Accueil ---------- */
@@ -330,6 +331,7 @@ img { max-width: 100%; display: block; }
 .session-card-text strong { font-family: var(--font-display); font-size: 1.15rem; font-weight: 700; }
 .session-card-text span { color: var(--muted); font-size: .86rem; }
 .empty-hint { margin-top: 18px; color: var(--muted); text-align: center; }
+.sport-delete { margin-top: 36px; }
 
 /* ---------- Page séance ---------- */
 
@@ -441,6 +443,24 @@ img { max-width: 100%; display: block; }
 }
 .sheet--wide .sheet-body { padding: 4px 12px 16px; }
 .lightbox-img { width: 100%; height: auto; border-radius: var(--r-md); }
+
+/* ---------- Boîte de confirmation ---------- */
+
+.dialog-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  display: grid; place-items: center; padding: 24px;
+  background: rgba(10, 14, 24, 0); transition: background-color .18s;
+}
+.dialog-backdrop.is-open { background: rgba(10, 14, 24, .55); }
+.dialog {
+  width: 100%; max-width: 380px; padding: 22px 20px 18px;
+  border-radius: 22px; background: var(--bg); box-shadow: 0 20px 50px rgba(0, 0, 0, .3);
+  transform: scale(.96); opacity: 0; transition: transform .18s, opacity .18s;
+}
+.dialog-backdrop.is-open .dialog { transform: scale(1); opacity: 1; }
+.dialog-msg { font-size: 1.05rem; font-weight: 600; line-height: 1.45; }
+.dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+.btn-danger { background: var(--danger); color: #fff; }
 
 /* ---------- Formulaires ---------- */
 
