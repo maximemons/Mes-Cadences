@@ -1708,7 +1708,7 @@ const BODY_METRICS = [
   { key: "weight", label: "Poids", short: "Poids", unit: "kg", decimals: 1 },
   { key: "bmi", label: "IMC", short: "IMC", unit: "", decimals: 1 },
   { key: "fat", label: "Masse grasse", short: "MG", unit: "%", decimals: 1 },
-  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "%", decimals: 1 },
+  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "kg", decimals: 1 },
   { key: "vma", label: "VMA", short: "VMA", unit: "km/h", decimals: 1 }
 ];
 
@@ -1799,6 +1799,13 @@ function renderBody() {
     if (mt.key === "bmi") sub = last ? bmiCategory(last.y) : (height ? "Ajoute ton poids" : "Renseigne ta taille");
     else if (mt.key === "vma" && last && prev) sub = `${signed(last.y - prev.y)} km/h depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}, allure ${fmtPace(last.y)}`;
     else if (mt.key === "vma" && last) sub = `Allure à 100 % : ${fmtPace(last.y)}`;
+    else if (mt.key === "muscle" && last) {
+      const sameDay = state.measures.find(m => m.date === last.date);
+      const w = toNum(sameDay?.weight);
+      const share = w ? `${fmtNum(last.y / w * 100)} % du poids` : "";
+      const delta = prev ? `${signed(last.y - prev.y)} kg depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}` : "";
+      sub = [delta, share].filter(Boolean).join(", ") || fmtDateKey(last.date, { day: "numeric", month: "short" });
+    }
     else if (last && prev) sub = `${signed(last.y - prev.y)}${mt.unit ? " " + mt.unit : ""} depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}`;
     else if (last) sub = fmtDateKey(last.date, { day: "numeric", month: "short" });
     else sub = "Pas encore de mesure";
@@ -1836,7 +1843,7 @@ function renderBody() {
         ${measures.length ? `
           <div class="table-wrap">
             <table class="data-table">
-              <thead><tr><th scope="col">Date</th><th scope="col">Poids<br>kg</th><th scope="col">IMC</th><th scope="col">MG<br>%</th><th scope="col">MM<br>%</th><th scope="col">VMA<br>km/h</th></tr></thead>
+              <thead><tr><th scope="col">Date</th><th scope="col">Poids<br>kg</th><th scope="col">IMC</th><th scope="col">MG<br>%</th><th scope="col">MM<br>kg</th><th scope="col">VMA<br>km/h</th></tr></thead>
               <tbody>
                 ${measures.map(m => {
                   const b = measureValue(m, "bmi");
@@ -2006,8 +2013,8 @@ function openMeasureEditor(measure = null, prefill = null) {
           <input type="text" name="fat" inputmode="decimal" value="${esc(init.fat)}" placeholder="18">
         </label>
         <label class="field">
-          <span class="field-label">Masse musculaire (%)</span>
-          <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="42">
+          <span class="field-label">Masse musculaire (kg)</span>
+          <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="34,5">
         </label>
         <label class="field">
           <span class="field-label">VMA (km/h)</span>
@@ -2062,7 +2069,8 @@ function openMeasureEditor(measure = null, prefill = null) {
         if (data.vma !== null && !(data.vma >= 5 && data.vma <= 30)) return toast("VMA attendue entre 5 et 30 km/h.", true);
         if (data.weight !== null && !(data.weight >= 20 && data.weight <= 400)) return toast("Poids attendu entre 20 et 400 kg.", true);
         if (data.fat !== null && !(data.fat >= 1 && data.fat <= 80)) return toast("Masse grasse attendue entre 1 et 80 %.", true);
-        if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 90)) return toast("Masse musculaire attendue entre 5 et 90 %.", true);
+        if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 150)) return toast("Masse musculaire attendue entre 5 et 150 kg.", true);
+        if (data.muscle !== null && data.weight !== null && data.muscle >= data.weight) return toast("La masse musculaire doit être inférieure au poids.", true);
         if (h !== null && !(h >= 80 && h <= 250)) return toast("Taille attendue entre 80 et 250 cm.", true);
         if (Object.values(data).some(v => v !== null && !Number.isFinite(v))) return toast("Une valeur n’est pas un nombre.", true);
 

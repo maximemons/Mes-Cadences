@@ -53,7 +53,7 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 
 ## Suivi personnel
 
-- Onglet **Suivi** : poids, taille, masse grasse, masse musculaire et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
+- Onglet **Suivi** : poids, taille, masse grasse (%), masse musculaire (kg) et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
 - La VMA est partagée avec le repère « VMA » (en km/h) des sports : la saisir dans le suivi met à jour les allures des séances, et la modifier dans les repères l’ajoute au suivi.
 - Une mesure par jour, modifiable ou supprimable depuis le tableau récapitulatif.
 - Graphique d’évolution pour chaque donnée (3 mois, 1 an, tout), avec la zone d’IMC normal.
@@ -123,7 +123,7 @@ users/{uid}/sports/{id}     nom, icône, couleur, repères
 users/{uid}/sessions/{id}   sportId, nom, jours, notes, exercices
 users/{uid}/images/{id}     image compressée d’un exercice
 users/{uid}/logs/{id}       séances effectuées (historique)
-users/{uid}/measures/{date} mesures corporelles (une par jour)
+users/{uid}/measures/{date} mesures (poids kg, masse grasse %, masse musculaire kg, VMA km/h)
 users/{uid}/maxes/{id}      historique des repères (max, VMA…)
 users/{uid}/profile/main    taille
 ```
