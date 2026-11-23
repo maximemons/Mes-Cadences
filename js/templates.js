@@ -1,5 +1,6 @@
 // Programmes d'exemple proposés au premier lancement.
 // Jours : 0 = lundi … 6 = dimanche. Repos en secondes.
+// "mode" : "reps" (répétitions), "distance" (km) ou "time" (durée en secondes).
 // "ref" pointe vers la clé d'un repère (charge max, VMA…) défini dans "refs".
 
 export const TEMPLATES = [
@@ -65,18 +66,18 @@ export const TEMPLATES = [
         days: [1],
         notes: "Récupération en trottinant pendant le temps de repos.",
         exercises: [
-          { name: "Échauffement", sets: 1, reps: "20 min", pct: 65, ref: "vma", rest: 120 },
-          { name: "Fractions", sets: 10, reps: "400 m", pct: 100, ref: "vma", rest: 90 },
-          { name: "Retour au calme", sets: 1, reps: "10 min", pct: 60, ref: "vma" }
+          { name: "Échauffement", sets: 1, mode: "time", duration: 1200, pct: 65, ref: "vma", rest: 120 },
+          { name: "Fractions", sets: 10, mode: "distance", distance: 0.4, pct: 100, ref: "vma", rest: 90 },
+          { name: "Retour au calme", sets: 1, mode: "time", duration: 600, pct: 60, ref: "vma" }
         ]
       },
       {
         name: "Seuil",
         days: [3],
         exercises: [
-          { name: "Échauffement", sets: 1, reps: "15 min", pct: 65, ref: "vma", rest: 60 },
-          { name: "Blocs au seuil", sets: 3, reps: "2000 m", pct: 85, ref: "vma", rest: 120 },
-          { name: "Retour au calme", sets: 1, reps: "10 min", pct: 60, ref: "vma" }
+          { name: "Échauffement", sets: 1, mode: "time", duration: 900, pct: 65, ref: "vma", rest: 60 },
+          { name: "Blocs au seuil", sets: 3, mode: "distance", distance: 2, pct: 85, ref: "vma", rest: 120 },
+          { name: "Retour au calme", sets: 1, mode: "time", duration: 600, pct: 60, ref: "vma" }
         ]
       },
       {
@@ -84,7 +85,7 @@ export const TEMPLATES = [
         days: [6],
         notes: "Allure confortable, tu dois pouvoir parler.",
         exercises: [
-          { name: "Footing", sets: 1, reps: "1 h 15", pct: 70, ref: "vma" }
+          { name: "Footing", sets: 1, mode: "distance", distance: 12, pct: 70, ref: "vma" }
         ]
       }
     ]

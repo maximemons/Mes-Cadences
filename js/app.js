@@ -151,6 +151,85 @@ function fmtDistance(km) {
   return km >= 1 ? `${fmtNum(km, 2)} km` : `${fmtNum(km * 1000, 0)} m`;
 }
 
+/* Type d'effort d'un exercice : répétitions, distance (km) ou durée */
+
+const EX_MODES = [
+  { key: "reps", label: "Répétitions" },
+  { key: "distance", label: "Distance" },
+  { key: "time", label: "Durée" }
+];
+
+// "20" → 20 min ; "2:30" → 2 min 30 ; "1h15" → 1 h 15 (résultat en secondes)
+function parseMinutes(str) {
+  const s = String(str ?? "").trim().toLowerCase();
+  if (!s) return null;
+  let m = s.match(/^(\d+)\s*h\s*(\d{1,2})?/);
+  if (m) return (parseInt(m[1], 10) * 60 + (parseInt(m[2], 10) || 0)) * 60;
+  m = s.match(/^(\d+)\s*[:'′]\s*(\d{1,2})/);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  m = s.match(/^(\d+(?:[.,]\d+)?)/);
+  if (m) return Math.round(toNum(m[1]) * 60);
+  return null;
+}
+
+function fmtClock(sec) {
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) return `${h} h ${String(m).padStart(2, "0")}`;
+  if (s === 0) return `${m} min`;
+  return `${m}′${String(s).padStart(2, "0")}″`;
+}
+
+function fmtClockInput(sec) {
+  if (!sec) return "";
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return s ? `${m}:${String(s).padStart(2, "0")}` : String(m);
+}
+
+// Anciennes données : on déduit le type depuis le texte des répétitions ("400 m", "20 min")
+function exMode(ex) {
+  if (ex.mode) return ex.mode;
+  const r = String(ex.reps || "").trim();
+  if (/^\d+(?:[.,]\d+)?\s*(km|m)$/i.test(r)) return "distance";
+  if (/^\d+\s*(min|h)\b/i.test(r) || /^\d+\s*h\s*\d+$/i.test(r)) return "time";
+  return "reps";
+}
+
+function exDistanceKm(ex) {
+  if (ex.mode === "distance") return toNum(ex.distance) || null;
+  if (ex.mode) return null;
+  return parseDistanceKm(ex.reps);
+}
+
+function exDurationSec(ex) {
+  if (ex.mode === "time") return toNum(ex.duration) || null;
+  if (ex.mode) return null;
+  return exMode(ex) === "time" ? parseMinutes(String(ex.reps).replace(/\s*min.*/i, "")) : null;
+}
+
+function volumeLabel(ex) {
+  const sets = setsCount(ex);
+  const mode = exMode(ex);
+  let unit;
+  if (mode === "distance") {
+    const d = exDistanceKm(ex);
+    unit = d ? fmtDistance(d) : "? km";
+  } else if (mode === "time") {
+    const t = exDurationSec(ex);
+    unit = t ? fmtClock(t) : "? min";
+  } else {
+    return `${sets} × ${ex.reps || "?"}`;
+  }
+  return sets > 1 ? `${sets} × ${unit}` : unit;
+}
+
+function isPaceRef(ref) {
+  return (ref?.unit || "").trim().toLowerCase() === "km/h";
+}
+
 function daysLabel(days) {
   const list = [...(days || [])].sort((a, b) => a - b);
   if (!list.length) return "Sans jour fixe";
@@ -247,8 +326,10 @@ function computeTarget(ex, sport) {
   } else if (u === "km/h") {
     main = `${fmtNum(v)} km/h`;
     extra = fmtPace(v);
-    const d = parseDistanceKm(ex.reps);
+    const d = exDistanceKm(ex);
+    const t = exDurationSec(ex);
     if (d) extra += `, soit ${fmtDistance(d)} en ${fmtRunTime(d / v * 3600)}`;
+    else if (t) extra += `, soit environ ${fmtDistance(v * t / 3600)}`;
   } else {
     main = `${fmtNum(v)}${unit ? " " + unit : ""}`;
   }
@@ -902,7 +983,7 @@ function exerciseCard(ex, index, sport, prog) {
         <span class="ex-index" aria-hidden="true">${index + 1}</span>
         <div class="ex-main">
           <h3>${esc(ex.name || "Exercice")}</h3>
-          <p class="ex-volume">${sets} × ${esc(ex.reps || "?")}</p>
+          <p class="ex-volume">${esc(volumeLabel(ex))}</p>
           ${intensity}
         </div>
         ${ex.imageId ? `
@@ -912,8 +993,8 @@ function exerciseCard(ex, index, sport, prog) {
       </div>
 
       <label class="ex-load">
-        <span>Ma charge</span>
-        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="ex. 82,5 kg ou 4′30″/km" enterkeyhint="done" autocomplete="off">
+        <span>${exMode(ex) === "reps" ? "Ma charge" : "Mon temps"}</span>
+        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="${exMode(ex) === "reps" ? "ex. 82,5 kg" : "ex. 24′30″ ou 4′50″/km"}" enterkeyhint="done" autocomplete="off">
       </label>
 
       <div class="ex-sets">
@@ -1016,7 +1097,10 @@ function createFromTemplate(key) {
         id: newId(),
         name: ex.name,
         sets: ex.sets,
-        reps: ex.reps,
+        mode: ex.mode || "reps",
+        reps: ex.reps || "",
+        distance: ex.distance ?? "",
+        duration: ex.duration ?? "",
         pct: ex.pct ?? "",
         refId: ex.ref ? refIds[ex.ref] : "",
         rest: ex.rest ?? "",
@@ -1240,6 +1324,10 @@ function openRefsEditor(sport) {
    ========================================================= */
 
 function exerciseBlock(ex, refs) {
+  const mode = exMode(ex);
+  const dist = exDistanceKm(ex);
+  const dur = exDurationSec(ex);
+  const ref = refs.find(r => r.id === ex.refId);
   return `
     <div class="exb" data-ex-id="${esc(ex.id)}">
       <div class="exb-head">
@@ -1251,17 +1339,33 @@ function exerciseBlock(ex, refs) {
         </div>
       </div>
 
+      <div class="mode-switch" role="radiogroup" aria-label="Type d’effort">
+        ${EX_MODES.map(m => `
+          <label>
+            <input type="radio" name="mode-${esc(ex.id)}" value="${m.key}" data-mode ${m.key === mode ? "checked" : ""}>
+            <span>${m.label}</span>
+          </label>`).join("")}
+      </div>
+
       <div class="exb-grid">
         <label class="field field--compact">
           <span class="field-label">Séries</span>
           <input type="number" data-f="sets" value="${esc(ex.sets)}" min="1" max="30" inputmode="numeric" placeholder="3">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "reps" ? "" : "hidden"}" data-mode-field="reps">
           <span class="field-label">Répétitions</span>
-          <input type="text" data-f="reps" value="${esc(ex.reps)}" placeholder="10, 400 m, 30 s">
+          <input type="text" data-f="reps" value="${mode === "reps" ? esc(ex.reps) : ""}" placeholder="10, 8-12">
+        </label>
+        <label class="field field--compact ${mode === "distance" ? "" : "hidden"}" data-mode-field="distance">
+          <span class="field-label">Distance (km)</span>
+          <input type="text" data-f="distance" value="${dist ? String(dist).replace(".", ",") : ""}" inputmode="decimal" placeholder="5 ou 0,4">
+        </label>
+        <label class="field field--compact ${mode === "time" ? "" : "hidden"}" data-mode-field="time">
+          <span class="field-label">Durée (min)</span>
+          <input type="text" data-f="duration" value="${fmtClockInput(dur)}" inputmode="decimal" placeholder="20 ou 2:30">
         </label>
         <label class="field field--compact">
-          <span class="field-label">Intensité (%)</span>
+          <span class="field-label" data-pct-label>${ref ? `% de ${esc(ref.label)}` : "Intensité (%)"}</span>
           <input type="text" data-f="pct" value="${esc(ex.pct)}" inputmode="decimal" placeholder="80">
         </label>
         <label class="field field--compact">
@@ -1276,8 +1380,8 @@ function exerciseBlock(ex, refs) {
           <input type="text" data-f="rest" value="${ex.rest ? fmtDuration(parseDuration(ex.rest)) : ""}" placeholder="1:30" inputmode="numeric">
         </label>
         <label class="field field--compact">
-          <span class="field-label">Ma charge</span>
-          <input type="text" data-f="load" value="${esc(ex.load)}" placeholder="80 kg">
+          <span class="field-label" data-load-label>${mode === "reps" ? "Ma charge" : "Mon temps"}</span>
+          <input type="text" data-f="load" value="${esc(ex.load)}" placeholder="${mode === "reps" ? "80 kg" : "24′30″"}">
         </label>
       </div>
 
@@ -1301,15 +1405,19 @@ function exerciseBlock(ex, refs) {
     </div>`;
 }
 
-function blankExercise() {
-  return { id: newId(), name: "", sets: 3, reps: "10", pct: "", refId: "", rest: 90, load: "", notes: "", imageId: null };
+function blankExercise(sport) {
+  const paceRef = (sport?.refs || []).find(isPaceRef);
+  if (paceRef) {
+    return { id: newId(), name: "", sets: 1, mode: "distance", reps: "", distance: "", duration: "", pct: "", refId: paceRef.id, rest: "", load: "", notes: "", imageId: null };
+  }
+  return { id: newId(), name: "", sets: 3, mode: "reps", reps: "10", distance: "", duration: "", pct: "", refId: "", rest: 90, load: "", notes: "", imageId: null };
 }
 
 function openSessionEditor(sport, session = null) {
   const isNew = !session;
   const refs = sport.refs || [];
   const original = session ? JSON.parse(JSON.stringify(session)) : null;
-  const startExercises = session?.exercises?.length ? session.exercises : [blankExercise()];
+  const startExercises = session?.exercises?.length ? session.exercises : [blankExercise(sport)];
 
   // État des images par exercice : { imageId (existant), data (nouvelle), removed }
   const images = new Map();
@@ -1366,11 +1474,17 @@ function openSessionEditor(sport, session = null) {
         const sets = parseInt(f("sets"), 10);
         const pct = toNum(f("pct"));
         const restSec = parseDuration(f("rest"));
+        const mode = $("[data-mode]:checked", block)?.value || "reps";
+        const distance = toNum(f("distance"));
+        const duration = parseMinutes(f("duration"));
         return {
           id: block.dataset.exId,
           name: f("name"),
           sets: Number.isFinite(sets) && sets > 0 ? sets : 1,
-          reps: f("reps"),
+          mode,
+          reps: mode === "reps" ? f("reps") : "",
+          distance: mode === "distance" && distance > 0 ? distance : "",
+          duration: mode === "time" && duration > 0 ? duration : "",
           pct: Number.isFinite(pct) ? pct : "",
           refId: f("refId"),
           rest: restSec || "",
@@ -1398,6 +1512,24 @@ function openSessionEditor(sport, session = null) {
       const bindBlock = block => {
         const id = block.dataset.exId;
         if (!images.has(id)) images.set(id, { imageId: null, data: null, removed: false });
+
+        const syncMode = (fromUser = false) => {
+          const mode = $("[data-mode]:checked", block)?.value || "reps";
+          $$("[data-mode-field]", block).forEach(f => f.classList.toggle("hidden", f.dataset.modeField !== mode));
+          $("[data-load-label]", block).textContent = mode === "reps" ? "Ma charge" : "Mon temps";
+          $('[data-f="load"]', block).placeholder = mode === "reps" ? "80 kg" : "24′30″";
+          const sel = $('[data-f="refId"]', block);
+          if (fromUser && mode !== "reps" && !sel.value) {
+            const paceRef = refs.find(isPaceRef);
+            if (paceRef) { sel.value = paceRef.id; sel.dispatchEvent(new Event("change")); }
+          }
+          if (fromUser) $(`[data-mode-field="${mode}"] input`, block)?.focus();
+        };
+        $$("[data-mode]", block).forEach(r => r.addEventListener("change", () => syncMode(true)));
+        $('[data-f="refId"]', block).addEventListener("change", e => {
+          const r = refs.find(x => x.id === e.target.value);
+          $("[data-pct-label]", block).textContent = r ? `% de ${r.label}` : "Intensité (%)";
+        });
 
         $("[data-remove]", block).addEventListener("click", async () => {
           const name = $('[data-f="name"]', block).value.trim();
@@ -1453,7 +1585,7 @@ function openSessionEditor(sport, session = null) {
       $$(".exb", listEl).forEach(bindBlock);
 
       $("[data-add-ex]", el).addEventListener("click", () => {
-        const ex = blankExercise();
+        const ex = blankExercise(sport);
         images.set(ex.id, { imageId: null, data: null, removed: false });
         listEl.insertAdjacentHTML("beforeend", exerciseBlock(ex, refs));
         const block = listEl.lastElementChild;
@@ -1569,14 +1701,15 @@ function signed(n, digits = 1) {
 }
 
 /* =========================================================
-   Suivi corporel : poids, taille, IMC, masse grasse, masse musculaire
+   Suivi personnel : poids, taille, IMC, masse grasse, masse musculaire, VMA
    ========================================================= */
 
 const BODY_METRICS = [
   { key: "weight", label: "Poids", short: "Poids", unit: "kg", decimals: 1 },
   { key: "bmi", label: "IMC", short: "IMC", unit: "", decimals: 1 },
   { key: "fat", label: "Masse grasse", short: "MG", unit: "%", decimals: 1 },
-  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "%", decimals: 1 }
+  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "%", decimals: 1 },
+  { key: "vma", label: "VMA", short: "VMA", unit: "km/h", decimals: 1 }
 ];
 
 const RANGES = [
@@ -1608,7 +1741,35 @@ function measureValue(m, key) {
   return Number.isFinite(v) ? v : null;
 }
 
+// Repères qui représentent ta VMA (unité km/h, nom contenant « VMA », sinon tout repère en km/h)
+function vmaRefs() {
+  const all = state.sports.flatMap(sp => (sp.refs || []).filter(isPaceRef).map(r => ({ sport: sp, ref: r })));
+  const named = all.filter(x => /vma/i.test(x.ref.label || ""));
+  return named.length ? named : all;
+}
+
+// VMA par date : mesures du suivi + historique des repères VMA des sports (sans doublon de date)
+function vmaByDate() {
+  const map = new Map();
+  vmaRefs().forEach(({ sport, ref }) => {
+    maxesOf(sport.id, ref.id).forEach(e => {
+      const v = toNum(e.value);
+      if (Number.isFinite(v) && !map.has(e.date)) map.set(e.date, v);
+    });
+  });
+  state.measures.forEach(m => {
+    const v = toNum(m.vma);
+    if (Number.isFinite(v)) map.set(m.date, v);
+  });
+  return map;
+}
+
 function metricSeries(key) {
+  if (key === "vma") {
+    return [...vmaByDate().entries()]
+      .map(([date, y]) => ({ t: dateKeyToTime(date), y, date }))
+      .sort((a, b) => a.t - b.t);
+  }
   return state.measures
     .map(m => ({ t: dateKeyToTime(m.date), y: measureValue(m, key), date: m.date }))
     .filter(p => p.y !== null && Number.isFinite(p.y))
@@ -1620,7 +1781,15 @@ function renderBody() {
   setFab({ label: "Nouvelle mesure", iconOnly: true, onClick: () => openMeasureEditor() });
   const view = $("#view");
   const height = toNum(state.profile.height);
-  const measures = [...state.measures].sort((a, b) => b.date.localeCompare(a.date));
+  // Lignes du tableau : les mesures, plus les dates où seule la VMA a changé (via les repères)
+  const vmaMap = vmaByDate();
+  const rowsByDate = new Map(state.measures.map(m => [m.date, { ...m }]));
+  vmaMap.forEach((v, date) => {
+    const row = rowsByDate.get(date) || { date };
+    row.vmaShown = v;
+    rowsByDate.set(date, row);
+  });
+  const measures = [...rowsByDate.values()].sort((a, b) => b.date.localeCompare(a.date));
 
   const tiles = BODY_METRICS.map(mt => {
     const series = metricSeries(mt.key);
@@ -1628,11 +1797,13 @@ function renderBody() {
     const prev = series[series.length - 2];
     let sub = "";
     if (mt.key === "bmi") sub = last ? bmiCategory(last.y) : (height ? "Ajoute ton poids" : "Renseigne ta taille");
+    else if (mt.key === "vma" && last && prev) sub = `${signed(last.y - prev.y)} km/h depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}, allure ${fmtPace(last.y)}`;
+    else if (mt.key === "vma" && last) sub = `Allure à 100 % : ${fmtPace(last.y)}`;
     else if (last && prev) sub = `${signed(last.y - prev.y)}${mt.unit ? " " + mt.unit : ""} depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}`;
     else if (last) sub = fmtDateKey(last.date, { day: "numeric", month: "short" });
     else sub = "Pas encore de mesure";
     return `
-      <button type="button" class="metric-tile ${ui.bodyMetric === mt.key ? "is-active" : ""}" data-metric="${mt.key}" aria-pressed="${ui.bodyMetric === mt.key}">
+      <button type="button" class="metric-tile ${mt.key === "vma" ? "metric-tile--wide" : ""} ${ui.bodyMetric === mt.key ? "is-active" : ""}" data-metric="${mt.key}" aria-pressed="${ui.bodyMetric === mt.key}">
         <span class="metric-label">${mt.label}</span>
         <span class="metric-value">${last ? fmtNum(last.y, mt.decimals) : "–"}<small>${last && mt.unit ? " " + mt.unit : ""}</small></span>
         <span class="metric-sub">${esc(sub)}</span>
@@ -1665,7 +1836,7 @@ function renderBody() {
         ${measures.length ? `
           <div class="table-wrap">
             <table class="data-table">
-              <thead><tr><th scope="col">Date</th><th scope="col">Poids</th><th scope="col">IMC</th><th scope="col">MG</th><th scope="col">MM</th></tr></thead>
+              <thead><tr><th scope="col">Date</th><th scope="col">Poids<br>kg</th><th scope="col">IMC</th><th scope="col">MG<br>%</th><th scope="col">MM<br>%</th><th scope="col">VMA<br>km/h</th></tr></thead>
               <tbody>
                 ${measures.map(m => {
                   const b = measureValue(m, "bmi");
@@ -1673,17 +1844,18 @@ function renderBody() {
                   return `
                     <tr data-measure="${esc(m.date)}" tabindex="0" role="button" aria-label="Modifier la mesure du ${fmtDateKey(m.date)}">
                       <td>${fmtDateCompact(m.date)}</td>
-                      <td>${cell(m.weight, " kg")}</td>
+                      <td>${cell(m.weight, "")}</td>
                       <td>${b === null ? "–" : fmtNum(b)}</td>
-                      <td>${cell(m.fat, " %")}</td>
-                      <td>${cell(m.muscle, " %")}</td>
+                      <td>${cell(m.fat, "")}</td>
+                      <td>${cell(m.muscle, "")}</td>
+                      <td>${m.vmaShown === undefined ? "–" : fmtNum(m.vmaShown)}</td>
                     </tr>`;
                 }).join("")}
               </tbody>
             </table>
           </div>` : `
           <div class="empty-state">
-            <p>Note ton poids, ta masse grasse et ta masse musculaire pour suivre leur évolution.</p>
+            <p>Note ton poids, ta masse grasse, ta masse musculaire et ta VMA pour suivre leur évolution.</p>
             <button type="button" class="btn btn-primary" data-first-measure><i class="fa-solid fa-plus"></i> Ajouter ma première mesure</button>
           </div>`}
       </section>
@@ -1733,7 +1905,11 @@ function renderBody() {
   $("[data-height]", view).addEventListener("click", openHeightEditor);
   $("[data-first-measure]", view)?.addEventListener("click", () => openMeasureEditor());
   $$("[data-measure]", view).forEach(row => {
-    const open = () => openMeasureEditor(state.measures.find(m => m.date === row.dataset.measure));
+    const open = () => {
+      const date = row.dataset.measure;
+      const existing = state.measures.find(m => m.date === date);
+      openMeasureEditor(existing || null, existing ? null : { date, vma: vmaByDate().get(date) ?? "" });
+    };
     row.addEventListener("click", open);
     row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
@@ -1763,7 +1939,9 @@ function drawBodyChart() {
     band: mt.key === "bmi" ? { from: 18.5, to: 25, label: "Normal" } : null,
     emptyText: mt.key === "bmi" && !state.profile.height
       ? "Renseigne ta taille pour calculer ton IMC."
-      : "Pas encore de mesure sur cette période."
+      : mt.key === "vma"
+        ? "Ajoute ta VMA dans une mesure ou dans les repères de ton sport de course."
+        : "Pas encore de mesure sur cette période."
   });
 }
 
@@ -1792,16 +1970,20 @@ function openHeightEditor() {
   });
 }
 
-function openMeasureEditor(measure = null) {
+function openMeasureEditor(measure = null, prefill = null) {
   const isNew = !measure;
   const height = state.profile.height || "";
+  const src = measure || prefill || {};
   const init = {
-    date: measure?.date || localDateKey(),
+    date: src.date || localDateKey(),
     height: String(height),
-    weight: measure?.weight ?? "",
-    fat: measure?.fat ?? "",
-    muscle: measure?.muscle ?? ""
+    weight: src.weight ?? "",
+    fat: src.fat ?? "",
+    muscle: src.muscle ?? "",
+    vma: src.vma ?? (measure ? (vmaByDate().get(measure.date) ?? "") : "")
   };
+  const linked = vmaRefs();
+  init.vma = String(init.vma).replace(".", ",");
   const initial = JSON.stringify(Object.values(init).map(String));
 
   const body = `
@@ -1827,7 +2009,14 @@ function openMeasureEditor(measure = null) {
           <span class="field-label">Masse musculaire (%)</span>
           <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="42">
         </label>
+        <label class="field">
+          <span class="field-label">VMA (km/h)</span>
+          <input type="text" name="vma" inputmode="decimal" value="${esc(String(init.vma).replace(".", ","))}" placeholder="15">
+        </label>
       </div>
+      <p class="hint">${linked.length
+        ? `La VMA met aussi à jour le repère ${linked.map(x => `« ${esc(x.ref.label)} » (${esc(x.sport.name)})`).join(", ")} : tes allures de séance suivent.`
+        : "Astuce : ajoute un repère « VMA » en km/h dans ton sport de course pour que tes allures de séance suivent cette valeur."}</p>
       <p class="bmi-preview" data-bmi aria-live="polite"></p>
       ${!isNew ? `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer cette mesure</button>` : ""}
     </form>`;
@@ -1840,7 +2029,8 @@ function openMeasureEditor(measure = null) {
       height: String(fd.get("height") || "").trim(),
       weight: String(fd.get("weight") || "").trim(),
       fat: String(fd.get("fat") || "").trim(),
-      muscle: String(fd.get("muscle") || "").trim()
+      muscle: String(fd.get("muscle") || "").trim(),
+      vma: String(fd.get("vma") || "").trim()
     };
   };
 
@@ -1863,12 +2053,13 @@ function openMeasureEditor(measure = null) {
       $("[data-save]", el).addEventListener("click", async () => {
         const d = read();
         const num = v => (v === "" ? null : toNum(v));
-        const data = { weight: num(d.weight), fat: num(d.fat), muscle: num(d.muscle) };
+        const data = { weight: num(d.weight), fat: num(d.fat), muscle: num(d.muscle), vma: num(d.vma) };
         const h = num(d.height);
 
         if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return toast("Choisis une date.", true);
         if (d.date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
-        if (data.weight === null && data.fat === null && data.muscle === null) return toast("Renseigne au moins une valeur.", true);
+        if (data.weight === null && data.fat === null && data.muscle === null && data.vma === null) return toast("Renseigne au moins une valeur.", true);
+        if (data.vma !== null && !(data.vma >= 5 && data.vma <= 30)) return toast("VMA attendue entre 5 et 30 km/h.", true);
         if (data.weight !== null && !(data.weight >= 20 && data.weight <= 400)) return toast("Poids attendu entre 20 et 400 kg.", true);
         if (data.fat !== null && !(data.fat >= 1 && data.fat <= 80)) return toast("Masse grasse attendue entre 1 et 80 %.", true);
         if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 90)) return toast("Masse musculaire attendue entre 5 et 90 %.", true);
@@ -1886,13 +2077,43 @@ function openMeasureEditor(measure = null) {
         if (h !== null && h !== toNum(state.profile.height)) {
           batch.set(userDoc("profile", "main"), { height: h, updatedAt: serverTimestamp() }, { merge: true });
         }
+
+        // VMA : on alimente aussi l'historique des repères VMA des sports, et leur valeur courante
+        const oldDate = !isNew ? measure.date : null;
+        linked.forEach(({ sport, ref }) => {
+          let entries = maxesOf(sport.id, ref.id);
+          if (oldDate && oldDate !== d.date && toNum(measure.vma)) {
+            batch.delete(userDoc("maxes", maxDocId(ref.id, oldDate)));
+            entries = entries.filter(e => e.date !== oldDate);
+          }
+          if (data.vma !== null) {
+            batch.set(userDoc("maxes", maxDocId(ref.id, d.date)), {
+              sportId: sport.id, refId: ref.id, date: d.date, value: data.vma, updatedAt: serverTimestamp()
+            });
+            entries = entries.filter(e => e.date !== d.date).concat({ id: maxDocId(ref.id, d.date), date: d.date, value: data.vma });
+          }
+          syncRefValue(sport, ref.id, entries);
+        });
+
         persist(batch.commit(), "Mesure enregistrée");
         entry.close();
       });
 
       $("[data-delete]", el)?.addEventListener("click", async () => {
         if (!await confirmDialog(`Supprimer la mesure du ${fmtDateKey(measure.date)} ?`, { confirmLabel: "Supprimer", danger: true })) return;
-        persist(deleteDoc(userDoc("measures", measure.date)), "Mesure supprimée");
+        const batch = writeBatch(db);
+        batch.delete(userDoc("measures", measure.date));
+        // La VMA saisie ce jour-là disparaît aussi de l'historique des repères
+        if (toNum(measure.vma)) {
+          linked.forEach(({ sport, ref }) => {
+            const id = maxDocId(ref.id, measure.date);
+            if (state.maxes.some(m => m.id === id)) {
+              batch.delete(userDoc("maxes", id));
+              syncRefValue(sport, ref.id, maxesOf(sport.id, ref.id).filter(e => e.id !== id));
+            }
+          });
+        }
+        persist(batch.commit(), "Mesure supprimée");
         entry.close();
       });
     }
@@ -2173,6 +2394,7 @@ function openCompleteSession(sport, session) {
               name: ex.name || "Exercice",
               sets: setsCount(ex),
               reps: ex.reps || "",
+              volume: volumeLabel(ex),
               doneSets: Math.min(prog[ex.id] || 0, setsCount(ex)),
               load: ex.load || "",
               target: target?.main ? `${fmtNum(target.pct)} % : ${target.main}` : ""
@@ -2308,7 +2530,7 @@ function openLogDetail(log) {
               <tbody>
                 ${log.exercises.map(ex => `
                   <tr class="${ex.doneSets < ex.sets ? "is-partial" : ""}">
-                    <td><strong>${esc(ex.name)}</strong><br><span class="muted">${ex.sets} × ${esc(ex.reps)}${ex.target ? `, ${esc(ex.target)}` : ""}</span></td>
+                    <td><strong>${esc(ex.name)}</strong><br><span class="muted">${esc(ex.volume || `${ex.sets} × ${ex.reps}`)}${ex.target ? `, ${esc(ex.target)}` : ""}</span></td>
                     <td>${ex.doneSets} / ${ex.sets}</td>
                     <td>${esc(ex.load) || "–"}</td>
                   </tr>`).join("")}

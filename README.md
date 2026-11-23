@@ -51,9 +51,10 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 - Histogramme des séances par semaine sur les 12 dernières semaines.
 - Liste des séances par mois, filtrable par sport ; un appui ouvre le détail (et permet de la supprimer).
 
-## Suivi corporel
+## Suivi personnel
 
-- Onglet **Suivi** : poids, taille, masse grasse et masse musculaire, avec l’**IMC calculé** automatiquement et sa catégorie.
+- Onglet **Suivi** : poids, taille, masse grasse, masse musculaire et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
+- La VMA est partagée avec le repère « VMA » (en km/h) des sports : la saisir dans le suivi met à jour les allures des séances, et la modifier dans les repères l’ajoute au suivi.
 - Une mesure par jour, modifiable ou supprimable depuis le tableau récapitulatif.
 - Graphique d’évolution pour chaque donnée (3 mois, 1 an, tout), avec la zone d’IMC normal.
 - Ces données de santé restent dans l’espace privé du compte ; un bouton permet de supprimer toutes ses mesures.
@@ -66,7 +67,10 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 
 ## Modifier ses séances
 
-- Nom, jours, notes, puis la liste des exercices : séries, répétitions, intensité, repère, repos (`90` ou `1:30`), charge, consignes et image.
+- Nom, jours, notes, puis la liste des exercices : séries, intensité, repère, repos (`90` ou `1:30`), charge, consignes et image.
+- Chaque exercice a un type d’effort : **Répétitions** (ex. `10`), **Distance** en km (ex. `5` ou `0,4`) ou **Durée** en minutes (ex. `20` ou `2:30`).
+- En course à pied, une distance à « 80 % de VMA » affiche la vitesse, l’allure et le temps visé (5 km à 80 % d’une VMA de 15 km/h → 12 km/h, 5′00″/km, 25′00″). Une durée affiche la distance approximative parcourue.
+- Dans un sport qui a une VMA, un nouvel exercice est créé en mode Distance avec la VMA déjà sélectionnée.
 - Les exercices se réordonnent avec les flèches.
 - Les images sont redimensionnées et compressées sur le téléphone avant l’envoi.
 
