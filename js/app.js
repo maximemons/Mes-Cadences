@@ -1,6 +1,7 @@
 import { auth, db, googleProvider } from "./firebase-config.js";
 import { TEMPLATES } from "./templates.js";
 import { openRestTimer, openTimer } from "./timer.js";
+import { mountChart, mountBarChart } from "./charts.js";
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -58,6 +59,10 @@ const state = {
   user: null,
   sports: [],
   sessions: [],
+  measures: [],
+  maxes: [],
+  logs: [],
+  profile: {},
   ready: { sports: false, sessions: false },
   unsub: []
 };
@@ -449,7 +454,20 @@ function setFab(config) {
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
-  return { sportId: parts[0] === "sport" ? parts[1] : null, sessionId: parts[2] === "session" ? parts[3] : null };
+  return {
+    page: ["history", "body"].includes(parts[0]) ? parts[0] : null,
+    sportId: parts[0] === "sport" ? parts[1] : null,
+    sessionId: parts[2] === "session" ? parts[3] : null,
+    progress: parts[0] === "sport" && parts[2] === "progress"
+  };
+}
+
+function setActiveTab(page) {
+  $$(".tabbar a").forEach(a => {
+    const active = a.dataset.tab === page;
+    a.classList.toggle("is-active", active);
+    if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
 }
 
 function scheduleRender() {
@@ -506,8 +524,8 @@ const awaiting = new Set();
 function render() {
   if (!state.user) return;
   pendingRender = false;
-  const { sportId, sessionId } = parseRoute();
-  const routeKey = `${sportId}/${sessionId}`;
+  const { page, sportId, sessionId, progress } = parseRoute();
+  const routeKey = `${page}/${sportId}/${sessionId}/${progress}`;
   const routeChanged = routeKey !== lastRouteKey;
   lastRouteKey = routeKey;
 
@@ -516,7 +534,13 @@ function render() {
     return;
   }
 
-  if (sportId) {
+  setActiveTab(page || "home");
+
+  if (page === "body") {
+    renderBody();
+  } else if (page === "history") {
+    renderHistory();
+  } else if (sportId) {
     const sport = state.sports.find(s => s.id === sportId);
     if (!sport) {
       if (awaiting.has(sportId)) { renderLoading(); return; }
@@ -533,6 +557,8 @@ function render() {
       }
       awaiting.delete(sessionId);
       renderSession(sport, session);
+    } else if (progress) {
+      renderProgress(sport);
     } else {
       renderSport(sport);
     }
@@ -555,6 +581,14 @@ function renderLoading() {
 /* =========================================================
    Vue : accueil (aujourd'hui + liste des sports)
    ========================================================= */
+
+function weekSummary() {
+  const planned = state.sessions.filter(s => sportOf(s)).reduce((n, s) => n + (s.days || []).length, 0);
+  const start = weekStart(Date.now());
+  const done = state.logs.filter(l => weekStart(dateKeyToTime(l.date)) === start).length;
+  if (!planned && !done) return "";
+  return `<a class="week-summary" href="#/history">Cette semaine : <strong>${done}</strong> séance${done > 1 ? "s" : ""} effectuée${done > 1 ? "s" : ""}${planned ? ` sur ${planned} prévue${planned > 1 ? "s" : ""}` : ""}</a>`;
+}
 
 function renderHome() {
   setHeader({ title: "Mes cadences" });
@@ -612,6 +646,7 @@ function renderHome() {
     <section class="today">
       <p class="today-date">${esc(dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1))}</p>
       <h2 class="display">${todays.length ? "Au programme aujourd’hui" : "Pas de séance prévue aujourd’hui"}</h2>
+      ${weekSummary()}
       ${todays.length ? `
         <div class="today-list">
           ${todays.map(s => {
@@ -619,14 +654,16 @@ function renderHome() {
             const prog = getProgress(s.id);
             const total = (s.exercises || []).reduce((n, ex) => n + setsCount(ex), 0);
             const done = (s.exercises || []).reduce((n, ex) => n + Math.min(prog[ex.id] || 0, setsCount(ex)), 0);
+            const isDone = logsToday(s.id).length > 0;
             return `
-              <a class="today-card" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
+              <a class="today-card ${isDone ? "is-done" : ""}" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
                 <span class="sport-badge"><i class="fa-solid ${sp.icon}"></i></span>
                 <span class="today-card-text">
                   <strong>${esc(s.name)}</strong>
                   <span>${esc(sp.name)}, ${(s.exercises || []).length} exercice${(s.exercises || []).length > 1 ? "s" : ""}</span>
                 </span>
-                ${total ? `<span class="mini-progress" aria-label="${done} séries sur ${total}"><span style="width:${Math.round(done / total * 100)}%"></span></span>` : ""}
+                ${isDone ? `<span class="done-tag"><i class="fa-solid fa-check"></i> Faite</span>` : ""}
+                ${total && !isDone ? `<span class="mini-progress" aria-label="${done} séries sur ${total}"><span style="width:${Math.round(done / total * 100)}%"></span></span>` : ""}
               </a>`;
           }).join("")}
         </div>` : nextHtml}
@@ -662,7 +699,10 @@ function renderSport(sport) {
   setHeader({
     title: sport.name,
     back: "#/",
-    actions: [{ icon: "fa-pen", label: "Modifier le sport", onClick: () => openSportEditor(sport) }]
+    actions: [
+      { icon: "fa-chart-line", label: "Évolution des max", onClick: () => { location.hash = `#/sport/${sport.id}/progress`; } },
+      { icon: "fa-pen", label: "Modifier le sport", onClick: () => openSportEditor(sport) }
+    ]
   });
   setFab({ label: "Nouvelle séance", iconOnly: true, onClick: () => openSessionEditor(sport) });
 
@@ -700,7 +740,10 @@ function renderSport(sport) {
       <section class="refs-card">
         <div class="refs-head">
           <h3 class="block-title">Mes repères</h3>
-          <button type="button" class="btn btn-small btn-ghost" data-edit-refs><i class="fa-solid fa-pen"></i> ${refs.length ? "Modifier" : "Ajouter"}</button>
+          <div class="refs-actions">
+            ${refs.length ? `<a class="btn btn-small btn-ghost" href="#/sport/${sport.id}/progress"><i class="fa-solid fa-chart-line"></i> Évolution</a>` : ""}
+            <button type="button" class="btn btn-small btn-ghost" data-edit-refs><i class="fa-solid fa-pen"></i> ${refs.length ? "Modifier" : "Ajouter"}</button>
+          </div>
         </div>
         ${refs.length ? `
           <div class="refs-list">
@@ -786,12 +829,27 @@ function renderSession(sport, session) {
           <button type="button" class="btn btn-primary" data-edit-session><i class="fa-solid fa-plus"></i> Ajouter des exercices</button>
         </div>`}
 
-      ${done > 0 ? `<button type="button" class="btn btn-ghost btn-block" data-reset><i class="fa-solid fa-rotate-left"></i> Remettre la séance à zéro</button>` : ""}
+      ${exercises.length ? (() => {
+        const todayLogs = logsToday(session.id);
+        return `
+          <div class="complete-zone">
+            ${todayLogs.length ? `
+              <a class="done-banner" href="#/history">
+                <i class="fa-solid fa-circle-check"></i>
+                <span><strong>Séance effectuée aujourd’hui</strong><span>Voir l’historique</span></span>
+              </a>` : ""}
+            <button type="button" class="btn ${todayLogs.length ? "btn-ghost" : "btn-primary btn-complete"} btn-block" data-complete>
+              <i class="fa-solid fa-flag-checkered"></i> ${todayLogs.length ? "Enregistrer une autre séance" : "Séance effectuée"}
+            </button>
+            ${done > 0 ? `<button type="button" class="btn btn-ghost btn-block" data-reset><i class="fa-solid fa-rotate-left"></i> Remettre la séance à zéro</button>` : ""}
+          </div>`;
+      })() : ""}
     </div>`;
 
   const view = $("#view");
   hydrateImages(view);
   $("[data-edit-session]", view)?.addEventListener("click", () => openSessionEditor(sport, session));
+  $("[data-complete]", view)?.addEventListener("click", () => openCompleteSession(sport, session));
   $("[data-reset]", view)?.addEventListener("click", async () => {
     if (!await confirmDialog("Effacer les séries validées aujourd’hui pour cette séance ?", { confirmLabel: "Remettre à zéro" })) return;
     setProgress(session.id, {});
@@ -892,7 +950,10 @@ function onSetTap(session, ex, index, card) {
       openRestTimer(restSec, `Avant la série ${next + 1} sur ${sets}`);
     } else if (next >= sets) {
       const all = (session.exercises || []).every(e => Math.min(prog[e.id] || 0, setsCount(e)) >= setsCount(e));
-      if (all) toast("Séance terminée, bravo !");
+      if (all) {
+        toast("Toutes les séries sont faites !");
+        setTimeout(() => $("[data-complete]")?.scrollIntoView({ behavior: "smooth", block: "center" }), 400);
+      }
       else if (restSec) openRestTimer(restSec, "Avant l’exercice suivant");
     }
   }
@@ -1086,6 +1147,7 @@ function deleteSport(sport) {
     (s.exercises || []).forEach(ex => { if (ex.imageId) batch.delete(userDoc("images", ex.imageId)); });
     batch.delete(userDoc("sessions", s.id));
   });
+  state.maxes.filter(m => m.sportId === sport.id).forEach(m => batch.delete(userDoc("maxes", m.id)));
   batch.delete(userDoc("sports", sport.id));
   persist(batch.commit(), "Sport supprimé");
 }
@@ -1109,7 +1171,7 @@ function openRefsEditor(sport) {
   const used = new Set(sessionsOf(sport.id).flatMap(s => (s.exercises || []).map(e => e.refId)).filter(Boolean));
 
   const body = `
-    <p class="muted">Un repère est une valeur de référence : ta charge maximale sur un mouvement, ta VMA, ta FTP… Dans tes séances, une intensité de 80 % sera calculée à partir de ce repère.</p>
+    <p class="muted">Un repère est une valeur de référence : ta charge maximale sur un mouvement, ta VMA, ta FTP… Dans tes séances, une intensité de 80 % sera calculée à partir de ce repère. Chaque nouvelle valeur est ajoutée à l’évolution de tes max.</p>
     <div class="ref-rows" data-rows>
       <div class="ref-row ref-row--head" aria-hidden="true"><span>Nom</span><span>Valeur</span><span>Unité</span><span></span></div>
       ${initial.map(refRow).join("")}
@@ -1150,7 +1212,23 @@ function openRefsEditor(sport) {
         const refs = read()
           .filter(r => r.label)
           .map(r => ({ ...r, value: Number.isFinite(toNum(r.value)) ? toNum(r.value) : r.value }));
-        persist(updateDoc(userDoc("sports", sport.id), { refs, updatedAt: serverTimestamp() }), "Repères enregistrés");
+        const batch = writeBatch(db);
+        batch.update(userDoc("sports", sport.id), { refs, updatedAt: serverTimestamp() });
+        // Historique : une nouvelle valeur est datée d'aujourd'hui
+        const today = localDateKey();
+        refs.forEach(r => {
+          const before = initial.find(i => i.id === r.id);
+          const v = toNum(r.value);
+          if (!Number.isFinite(v) || v <= 0) return;
+          if (before && toNum(before.value) === v) return;
+          batch.set(userDoc("maxes", maxDocId(r.id, today)), {
+            sportId: sport.id, refId: r.id, date: today, value: v, updatedAt: serverTimestamp()
+          });
+        });
+        // Repères supprimés : on retire leur historique
+        const keptIds = new Set(refs.map(r => r.id));
+        state.maxes.filter(m => m.sportId === sport.id && !keptIds.has(m.refId)).forEach(m => batch.delete(userDoc("maxes", m.id)));
+        persist(batch.commit(), "Repères enregistrés");
         entry.close();
       });
     }
@@ -1451,6 +1529,805 @@ function openSessionEditor(sport, session = null) {
 }
 
 /* =========================================================
+   Dates
+   ========================================================= */
+
+function dateKeyOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// "2026-11-23" → horodatage à midi (évite les décalages d'heure d'été)
+function dateKeyToTime(key) {
+  const [y, m, d] = String(key).split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1, 12).getTime();
+}
+
+function fmtDateKey(key, opts = { day: "numeric", month: "short", year: "numeric" }) {
+  return new Date(dateKeyToTime(key)).toLocaleDateString("fr-FR", opts);
+}
+
+function fmtDateCompact(key) {
+  return fmtDateKey(key, { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+// Lundi de la semaine contenant la date
+function weekStart(time) {
+  const d = new Date(time);
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+}
+
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+function signed(n, digits = 1) {
+  const v = fmtNum(Math.abs(n), digits);
+  if (Math.abs(n) < Math.pow(10, -digits) / 2) return "=";
+  return `${n > 0 ? "+" : "−"}${v}`;
+}
+
+/* =========================================================
+   Suivi corporel : poids, taille, IMC, masse grasse, masse musculaire
+   ========================================================= */
+
+const BODY_METRICS = [
+  { key: "weight", label: "Poids", short: "Poids", unit: "kg", decimals: 1 },
+  { key: "bmi", label: "IMC", short: "IMC", unit: "", decimals: 1 },
+  { key: "fat", label: "Masse grasse", short: "MG", unit: "%", decimals: 1 },
+  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "%", decimals: 1 }
+];
+
+const RANGES = [
+  { key: "3m", label: "3 mois", days: 92 },
+  { key: "1y", label: "1 an", days: 366 },
+  { key: "all", label: "Tout", days: Infinity }
+];
+
+const ui = { bodyMetric: "weight", bodyRange: "all", historySport: "all", logsShown: 30 };
+
+function bmiOf(weight, heightCm) {
+  const w = toNum(weight);
+  const h = toNum(heightCm);
+  if (!w || !h) return null;
+  return w / Math.pow(h / 100, 2);
+}
+
+function bmiCategory(v) {
+  if (v === null) return "";
+  if (v < 18.5) return "Maigreur";
+  if (v < 25) return "Corpulence normale";
+  if (v < 30) return "Surpoids";
+  return "Obésité";
+}
+
+function measureValue(m, key) {
+  if (key === "bmi") return bmiOf(m.weight, m.height || state.profile.height);
+  const v = toNum(m[key]);
+  return Number.isFinite(v) ? v : null;
+}
+
+function metricSeries(key) {
+  return state.measures
+    .map(m => ({ t: dateKeyToTime(m.date), y: measureValue(m, key), date: m.date }))
+    .filter(p => p.y !== null && Number.isFinite(p.y))
+    .sort((a, b) => a.t - b.t);
+}
+
+function renderBody() {
+  setHeader({ title: "Suivi" });
+  setFab({ label: "Nouvelle mesure", iconOnly: true, onClick: () => openMeasureEditor() });
+  const view = $("#view");
+  const height = toNum(state.profile.height);
+  const measures = [...state.measures].sort((a, b) => b.date.localeCompare(a.date));
+
+  const tiles = BODY_METRICS.map(mt => {
+    const series = metricSeries(mt.key);
+    const last = series[series.length - 1];
+    const prev = series[series.length - 2];
+    let sub = "";
+    if (mt.key === "bmi") sub = last ? bmiCategory(last.y) : (height ? "Ajoute ton poids" : "Renseigne ta taille");
+    else if (last && prev) sub = `${signed(last.y - prev.y)}${mt.unit ? " " + mt.unit : ""} depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}`;
+    else if (last) sub = fmtDateKey(last.date, { day: "numeric", month: "short" });
+    else sub = "Pas encore de mesure";
+    return `
+      <button type="button" class="metric-tile ${ui.bodyMetric === mt.key ? "is-active" : ""}" data-metric="${mt.key}" aria-pressed="${ui.bodyMetric === mt.key}">
+        <span class="metric-label">${mt.label}</span>
+        <span class="metric-value">${last ? fmtNum(last.y, mt.decimals) : "–"}<small>${last && mt.unit ? " " + mt.unit : ""}</small></span>
+        <span class="metric-sub">${esc(sub)}</span>
+      </button>`;
+  }).join("");
+
+  const maxRows = state.sports.flatMap(sp => (sp.refs || []).map(r => ({ sp, r })));
+
+  view.innerHTML = `
+    <section class="body-page">
+      <div class="metric-grid">${tiles}</div>
+
+      <div class="height-line">
+        <span>Taille : <strong>${height ? `${fmtNum(height, 0)} cm` : "non renseignée"}</strong></span>
+        <button type="button" class="btn btn-small btn-ghost" data-height><i class="fa-solid fa-ruler-vertical"></i> ${height ? "Modifier" : "Renseigner"}</button>
+      </div>
+
+      <section class="card chart-card">
+        <div class="chart-head">
+          <h3 class="block-title">${BODY_METRICS.find(m => m.key === ui.bodyMetric).label}</h3>
+          <div class="segmented" role="group" aria-label="Période">
+            ${RANGES.map(r => `<button type="button" data-range="${r.key}" aria-pressed="${ui.bodyRange === r.key}">${r.label}</button>`).join("")}
+          </div>
+        </div>
+        <div data-body-chart></div>
+      </section>
+
+      <section class="block">
+        <h3 class="block-title">Récapitulatif</h3>
+        ${measures.length ? `
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead><tr><th scope="col">Date</th><th scope="col">Poids</th><th scope="col">IMC</th><th scope="col">MG</th><th scope="col">MM</th></tr></thead>
+              <tbody>
+                ${measures.map(m => {
+                  const b = measureValue(m, "bmi");
+                  const cell = (v, unit) => (v === null || v === undefined || v === "" || !Number.isFinite(toNum(v)) ? "–" : `${fmtNum(toNum(v))}${unit}`);
+                  return `
+                    <tr data-measure="${esc(m.date)}" tabindex="0" role="button" aria-label="Modifier la mesure du ${fmtDateKey(m.date)}">
+                      <td>${fmtDateCompact(m.date)}</td>
+                      <td>${cell(m.weight, " kg")}</td>
+                      <td>${b === null ? "–" : fmtNum(b)}</td>
+                      <td>${cell(m.fat, " %")}</td>
+                      <td>${cell(m.muscle, " %")}</td>
+                    </tr>`;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>` : `
+          <div class="empty-state">
+            <p>Note ton poids, ta masse grasse et ta masse musculaire pour suivre leur évolution.</p>
+            <button type="button" class="btn btn-primary" data-first-measure><i class="fa-solid fa-plus"></i> Ajouter ma première mesure</button>
+          </div>`}
+      </section>
+
+      <section class="block">
+        <h3 class="block-title">Mes max</h3>
+        ${maxRows.length ? `
+          <div class="max-overview">
+            ${maxRows.map(({ sp, r }) => {
+              const entries = maxesOf(sp.id, r.id);
+              const first = entries[0];
+              const cur = toNum(r.value);
+              const delta = first && Number.isFinite(cur) && entries.length > 1 ? cur - toNum(first.value) : null;
+              return `
+                <a class="max-row" href="#/sport/${sp.id}/progress" style="--sport:${sp.color}">
+                  <span class="max-dot"></span>
+                  <span class="max-text"><strong>${esc(r.label)}</strong><span>${esc(sp.name)}</span></span>
+                  <span class="max-value">${Number.isFinite(cur) ? fmtNum(cur, 2) : "?"} ${esc(r.unit || "")}
+                    ${delta !== null ? `<small>${signed(delta)} depuis le début</small>` : ""}</span>
+                </a>`;
+            }).join("")}
+          </div>` : `<p class="muted">Ajoute des repères (charge max, VMA…) dans un sport pour suivre leur évolution ici.</p>`}
+      </section>
+
+      ${measures.length ? `
+        <button type="button" class="btn btn-danger-ghost btn-block danger-zone" data-wipe-measures>
+          <i class="fa-solid fa-trash"></i> Supprimer toutes mes mesures
+        </button>` : ""}
+    </section>`;
+
+  drawBodyChart();
+
+  $$("[data-metric]", view).forEach(b => b.addEventListener("click", () => {
+    ui.bodyMetric = b.dataset.metric;
+    $$("[data-metric]", view).forEach(x => {
+      x.classList.toggle("is-active", x === b);
+      x.setAttribute("aria-pressed", String(x === b));
+    });
+    $(".chart-card .block-title", view).textContent = BODY_METRICS.find(m => m.key === ui.bodyMetric).label;
+    drawBodyChart();
+  }));
+  $$("[data-range]", view).forEach(b => b.addEventListener("click", () => {
+    ui.bodyRange = b.dataset.range;
+    $$("[data-range]", view).forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    drawBodyChart();
+  }));
+  $("[data-height]", view).addEventListener("click", openHeightEditor);
+  $("[data-first-measure]", view)?.addEventListener("click", () => openMeasureEditor());
+  $$("[data-measure]", view).forEach(row => {
+    const open = () => openMeasureEditor(state.measures.find(m => m.date === row.dataset.measure));
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+  $("[data-wipe-measures]", view)?.addEventListener("click", async () => {
+    if (!await confirmDialog(`Supprimer définitivement tes ${state.measures.length} mesures ?`, { confirmLabel: "Tout supprimer", danger: true })) return;
+    const ids = state.measures.map(m => m.date);
+    for (let i = 0; i < ids.length; i += 400) {
+      const batch = writeBatch(db);
+      ids.slice(i, i + 400).forEach(id => batch.delete(userDoc("measures", id)));
+      persist(batch.commit(), i === 0 ? "Mesures supprimées" : null);
+    }
+  });
+}
+
+function drawBodyChart() {
+  const host = $("[data-body-chart]");
+  if (!host) return;
+  const mt = BODY_METRICS.find(m => m.key === ui.bodyMetric);
+  const range = RANGES.find(r => r.key === ui.bodyRange);
+  const limit = Date.now() - range.days * 86400000;
+  const points = metricSeries(mt.key).filter(p => p.t >= limit);
+  mountChart(host, {
+    points,
+    unit: mt.unit,
+    decimals: mt.decimals,
+    label: `Évolution : ${mt.label}`,
+    band: mt.key === "bmi" ? { from: 18.5, to: 25, label: "Normal" } : null,
+    emptyText: mt.key === "bmi" && !state.profile.height
+      ? "Renseigne ta taille pour calculer ton IMC."
+      : "Pas encore de mesure sur cette période."
+  });
+}
+
+function openHeightEditor() {
+  const initial = state.profile.height ? String(state.profile.height) : "";
+  openSheet({
+    title: "Ma taille",
+    body: `
+      <label class="field">
+        <span class="field-label">Taille (cm)</span>
+        <input type="text" name="height" inputmode="decimal" value="${esc(initial)}" placeholder="178">
+      </label>
+      <p class="muted">Elle sert à calculer ton IMC pour toutes tes mesures.</p>`,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save>Enregistrer</button>`,
+    isDirty: () => $("[name=height]").value.trim() !== initial,
+    onMount(el, entry) {
+      const input = $("[name=height]", el);
+      setTimeout(() => input.focus(), 250);
+      $("[data-save]", el).addEventListener("click", () => {
+        const h = toNum(input.value);
+        if (!(h >= 80 && h <= 250)) { toast("Indique une taille entre 80 et 250 cm.", true); input.focus(); return; }
+        persist(setDoc(userDoc("profile", "main"), { height: h, updatedAt: serverTimestamp() }, { merge: true }), "Taille enregistrée");
+        entry.close();
+      });
+    }
+  });
+}
+
+function openMeasureEditor(measure = null) {
+  const isNew = !measure;
+  const height = state.profile.height || "";
+  const init = {
+    date: measure?.date || localDateKey(),
+    height: String(height),
+    weight: measure?.weight ?? "",
+    fat: measure?.fat ?? "",
+    muscle: measure?.muscle ?? ""
+  };
+  const initial = JSON.stringify(Object.values(init).map(String));
+
+  const body = `
+    <form class="form" data-form novalidate>
+      <label class="field">
+        <span class="field-label">Date</span>
+        <input type="date" name="date" value="${esc(init.date)}" max="${localDateKey()}">
+      </label>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Poids (kg)</span>
+          <input type="text" name="weight" inputmode="decimal" value="${esc(init.weight)}" placeholder="78,5">
+        </label>
+        <label class="field">
+          <span class="field-label">Taille (cm)</span>
+          <input type="text" name="height" inputmode="decimal" value="${esc(init.height)}" placeholder="178">
+        </label>
+        <label class="field">
+          <span class="field-label">Masse grasse (%)</span>
+          <input type="text" name="fat" inputmode="decimal" value="${esc(init.fat)}" placeholder="18">
+        </label>
+        <label class="field">
+          <span class="field-label">Masse musculaire (%)</span>
+          <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="42">
+        </label>
+      </div>
+      <p class="bmi-preview" data-bmi aria-live="polite"></p>
+      ${!isNew ? `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer cette mesure</button>` : ""}
+    </form>`;
+
+  let form;
+  const read = () => {
+    const fd = new FormData(form);
+    return {
+      date: String(fd.get("date") || ""),
+      height: String(fd.get("height") || "").trim(),
+      weight: String(fd.get("weight") || "").trim(),
+      fat: String(fd.get("fat") || "").trim(),
+      muscle: String(fd.get("muscle") || "").trim()
+    };
+  };
+
+  openSheet({
+    title: isNew ? "Nouvelle mesure" : "Modifier la mesure",
+    body,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save>Enregistrer</button>`,
+    isDirty: () => JSON.stringify(Object.values(read()).map(String)) !== initial,
+    onMount(el, entry) {
+      form = $("[data-form]", el);
+      const preview = () => {
+        const d = read();
+        const b = bmiOf(d.weight, d.height);
+        $("[data-bmi]", el).textContent = b ? `IMC : ${fmtNum(b)} (${bmiCategory(b).toLowerCase()})` : "";
+      };
+      form.addEventListener("input", preview);
+      preview();
+      if (isNew) setTimeout(() => $("[name=weight]", el).focus(), 250);
+
+      $("[data-save]", el).addEventListener("click", async () => {
+        const d = read();
+        const num = v => (v === "" ? null : toNum(v));
+        const data = { weight: num(d.weight), fat: num(d.fat), muscle: num(d.muscle) };
+        const h = num(d.height);
+
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return toast("Choisis une date.", true);
+        if (d.date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
+        if (data.weight === null && data.fat === null && data.muscle === null) return toast("Renseigne au moins une valeur.", true);
+        if (data.weight !== null && !(data.weight >= 20 && data.weight <= 400)) return toast("Poids attendu entre 20 et 400 kg.", true);
+        if (data.fat !== null && !(data.fat >= 1 && data.fat <= 80)) return toast("Masse grasse attendue entre 1 et 80 %.", true);
+        if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 90)) return toast("Masse musculaire attendue entre 5 et 90 %.", true);
+        if (h !== null && !(h >= 80 && h <= 250)) return toast("Taille attendue entre 80 et 250 cm.", true);
+        if (Object.values(data).some(v => v !== null && !Number.isFinite(v))) return toast("Une valeur n’est pas un nombre.", true);
+
+        const replacing = state.measures.find(m => m.date === d.date);
+        if (replacing && (isNew || measure.date !== d.date)) {
+          if (!await confirmDialog(`Une mesure existe déjà le ${fmtDateKey(d.date)}. La remplacer ?`, { confirmLabel: "Remplacer" })) return;
+        }
+
+        const batch = writeBatch(db);
+        batch.set(userDoc("measures", d.date), { date: d.date, ...data, updatedAt: serverTimestamp() });
+        if (!isNew && measure.date !== d.date) batch.delete(userDoc("measures", measure.date));
+        if (h !== null && h !== toNum(state.profile.height)) {
+          batch.set(userDoc("profile", "main"), { height: h, updatedAt: serverTimestamp() }, { merge: true });
+        }
+        persist(batch.commit(), "Mesure enregistrée");
+        entry.close();
+      });
+
+      $("[data-delete]", el)?.addEventListener("click", async () => {
+        if (!await confirmDialog(`Supprimer la mesure du ${fmtDateKey(measure.date)} ?`, { confirmLabel: "Supprimer", danger: true })) return;
+        persist(deleteDoc(userDoc("measures", measure.date)), "Mesure supprimée");
+        entry.close();
+      });
+    }
+  });
+}
+
+/* =========================================================
+   Évolution des max (historique des repères)
+   ========================================================= */
+
+const maxDocId = (refId, date) => `${refId}_${date}`;
+
+function maxesOf(sportId, refId) {
+  return state.maxes
+    .filter(m => m.sportId === sportId && m.refId === refId)
+    .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+// Remet la valeur courante du repère sur la mesure la plus récente
+function syncRefValue(sport, refId, entries) {
+  if (!entries.length) return;
+  const latest = entries.reduce((a, b) => (a.date >= b.date ? a : b));
+  const refs = (sport.refs || []).map(r => (r.id === refId ? { ...r, value: latest.value } : r));
+  const current = (sport.refs || []).find(r => r.id === refId);
+  if (current && toNum(current.value) === toNum(latest.value)) return;
+  persist(updateDoc(userDoc("sports", sport.id), { refs, updatedAt: serverTimestamp() }));
+}
+
+function renderProgress(sport) {
+  setHeader({
+    title: "Évolution des max",
+    kicker: sport.name,
+    back: `#/sport/${sport.id}`,
+    actions: [{ icon: "fa-sliders", label: "Modifier les repères", onClick: () => openRefsEditor(sport) }]
+  });
+  const refs = sport.refs || [];
+  setFab(refs.length ? { label: "Nouveau max", iconOnly: true, onClick: () => openMaxEditor(sport) } : null);
+  const view = $("#view");
+
+  if (!refs.length) {
+    view.innerHTML = `
+      <div class="empty-state" style="--sport:${sport.color}">
+        <p>Ajoute d’abord un repère : ta charge max sur un exercice, ta VMA…</p>
+        <button type="button" class="btn btn-primary" data-refs><i class="fa-solid fa-plus"></i> Ajouter un repère</button>
+      </div>`;
+    $("[data-refs]", view).addEventListener("click", () => openRefsEditor(sport));
+    return;
+  }
+
+  view.innerHTML = `
+    <div class="progress-page" style="--sport:${sport.color}">
+      ${refs.map(r => {
+        const entries = maxesOf(sport.id, r.id);
+        const cur = toNum(r.value);
+        const first = entries[0];
+        const delta = entries.length > 1 ? toNum(entries[entries.length - 1].value) - toNum(first.value) : null;
+        return `
+          <section class="card max-card" data-ref="${esc(r.id)}">
+            <div class="max-card-head">
+              <div>
+                <h3>${esc(r.label)}</h3>
+                ${delta !== null ? `<p class="muted">${signed(delta, 2)} ${esc(r.unit || "")} depuis le ${fmtDateKey(first.date)}</p>` : ""}
+              </div>
+              <p class="max-current">${Number.isFinite(cur) ? fmtNum(cur, 2) : "?"}<small> ${esc(r.unit || "")}</small></p>
+            </div>
+            ${entries.length ? `<div data-max-chart></div>` : `
+              <p class="muted">Pas encore d’historique pour ce repère.</p>
+              ${Number.isFinite(cur) ? `<button type="button" class="btn btn-small btn-ghost" data-seed><i class="fa-solid fa-flag"></i> Enregistrer ${fmtNum(cur, 2)} ${esc(r.unit || "")} comme point de départ</button>` : ""}`}
+            <div class="max-actions">
+              <button type="button" class="btn btn-small btn-ghost" data-add-max><i class="fa-solid fa-plus"></i> Nouveau max</button>
+            </div>
+            ${entries.length ? `
+              <ol class="max-entries">
+                ${[...entries].reverse().map((e, i, arr) => {
+                  const prev = arr[i + 1];
+                  const d = prev ? toNum(e.value) - toNum(prev.value) : null;
+                  return `
+                    <li>
+                      <button type="button" data-entry="${esc(e.id)}">
+                        <span>${fmtDateKey(e.date)}</span>
+                        <strong>${fmtNum(toNum(e.value), 2)} ${esc(r.unit || "")}</strong>
+                        <span class="entry-delta ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d === null ? "" : signed(d, 2)}</span>
+                      </button>
+                    </li>`;
+                }).join("")}
+              </ol>` : ""}
+          </section>`;
+      }).join("")}
+    </div>`;
+
+  $$(".max-card", view).forEach(card => {
+    const ref = refs.find(r => r.id === card.dataset.ref);
+    const entries = maxesOf(sport.id, ref.id);
+    const host = $("[data-max-chart]", card);
+    if (host) {
+      mountChart(host, {
+        points: entries.map(e => ({ t: dateKeyToTime(e.date), y: toNum(e.value) })).filter(p => Number.isFinite(p.y)),
+        unit: ref.unit || "",
+        decimals: 2,
+        label: `Évolution : ${ref.label}`
+      });
+    }
+    $("[data-add-max]", card).addEventListener("click", () => openMaxEditor(sport, ref.id));
+    $("[data-seed]", card)?.addEventListener("click", () => {
+      const date = localDateKey();
+      persist(setDoc(userDoc("maxes", maxDocId(ref.id, date)), {
+        sportId: sport.id, refId: ref.id, date, value: toNum(ref.value), createdAt: serverTimestamp()
+      }), "Point de départ enregistré");
+    });
+    $$("[data-entry]", card).forEach(b => b.addEventListener("click", () => {
+      openMaxEditor(sport, ref.id, state.maxes.find(m => m.id === b.dataset.entry));
+    }));
+  });
+}
+
+function openMaxEditor(sport, refId = null, entry = null) {
+  const refs = sport.refs || [];
+  const isNew = !entry;
+  const init = {
+    refId: entry?.refId || refId || refs[0]?.id || "",
+    date: entry?.date || localDateKey(),
+    value: entry ? String(entry.value) : ""
+  };
+  const initial = JSON.stringify(init);
+  const unitOf = id => refs.find(r => r.id === id)?.unit || "";
+
+  const body = `
+    <form class="form" data-form novalidate>
+      <label class="field">
+        <span class="field-label">Repère</span>
+        <select name="refId" ${!isNew ? "disabled" : ""}>
+          ${refs.map(r => `<option value="${esc(r.id)}" ${r.id === init.refId ? "selected" : ""}>${esc(r.label)}</option>`).join("")}
+        </select>
+      </label>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Date</span>
+          <input type="date" name="date" value="${esc(init.date)}" max="${localDateKey()}">
+        </label>
+        <label class="field">
+          <span class="field-label">Valeur <span data-unit>${esc(unitOf(init.refId) ? `(${unitOf(init.refId)})` : "")}</span></span>
+          <input type="text" name="value" inputmode="decimal" value="${esc(init.value)}" placeholder="105">
+        </label>
+      </div>
+      ${!isNew ? `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer cette valeur</button>` : ""}
+    </form>`;
+
+  let form;
+  const read = () => {
+    const fd = new FormData(form);
+    return { refId: isNew ? String(fd.get("refId") || "") : init.refId, date: String(fd.get("date") || ""), value: String(fd.get("value") || "").trim() };
+  };
+
+  openSheet({
+    title: isNew ? "Nouveau max" : "Modifier la valeur",
+    body,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save>Enregistrer</button>`,
+    isDirty: () => JSON.stringify(read()) !== initial,
+    onMount(el, sheet) {
+      form = $("[data-form]", el);
+      $("[name=refId]", el).addEventListener("change", e => {
+        const u = unitOf(e.target.value);
+        $("[data-unit]", el).textContent = u ? `(${u})` : "";
+      });
+      setTimeout(() => $("[name=value]", el).focus(), 250);
+
+      $("[data-save]", el).addEventListener("click", () => {
+        const d = read();
+        const value = toNum(d.value);
+        if (!d.refId) return toast("Choisis un repère.", true);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return toast("Choisis une date.", true);
+        if (d.date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
+        if (!Number.isFinite(value) || value <= 0) return toast("Indique une valeur positive.", true);
+
+        const id = maxDocId(d.refId, d.date);
+        const batch = writeBatch(db);
+        batch.set(userDoc("maxes", id), { sportId: sport.id, refId: d.refId, date: d.date, value, updatedAt: serverTimestamp() });
+        if (!isNew && entry.id !== id) batch.delete(userDoc("maxes", entry.id));
+        persist(batch.commit(), "Max enregistré");
+
+        const after = maxesOf(sport.id, d.refId).filter(m => m.id !== id && (isNew || m.id !== entry.id));
+        after.push({ id, date: d.date, value });
+        syncRefValue(sport, d.refId, after);
+        sheet.close();
+      });
+
+      $("[data-delete]", el)?.addEventListener("click", async () => {
+        if (!await confirmDialog(`Supprimer la valeur du ${fmtDateKey(entry.date)} ?`, { confirmLabel: "Supprimer", danger: true })) return;
+        persist(deleteDoc(userDoc("maxes", entry.id)), "Valeur supprimée");
+        syncRefValue(sport, entry.refId, maxesOf(sport.id, entry.refId).filter(m => m.id !== entry.id));
+        sheet.close();
+      });
+    }
+  });
+}
+
+/* =========================================================
+   Séances effectuées et historique
+   ========================================================= */
+
+const FEELINGS = [
+  { key: "easy", label: "Facile", icon: "fa-face-smile" },
+  { key: "ok", label: "Correcte", icon: "fa-face-meh" },
+  { key: "hard", label: "Difficile", icon: "fa-face-grimace" },
+  { key: "max", label: "Épuisante", icon: "fa-face-tired" }
+];
+
+function logsToday(sessionId) {
+  const today = localDateKey();
+  return state.logs.filter(l => l.sessionId === sessionId && l.date === today);
+}
+
+function openCompleteSession(sport, session) {
+  const prog = getProgress(session.id);
+  const exercises = session.exercises || [];
+  const total = exercises.reduce((n, ex) => n + setsCount(ex), 0);
+  const done = exercises.reduce((n, ex) => n + Math.min(prog[ex.id] || 0, setsCount(ex)), 0);
+
+  const body = `
+    <form class="form" data-form novalidate>
+      <div class="complete-summary">
+        <span class="complete-count">${done}<small> / ${total}</small></span>
+        <span>séries validées${done < total ? ". Les séries non cochées seront notées comme non faites." : ", tout est fait."}</span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Date</span>
+          <input type="date" name="date" value="${localDateKey()}" max="${localDateKey()}">
+        </label>
+        <label class="field">
+          <span class="field-label">Durée (min)</span>
+          <input type="text" name="duration" inputmode="numeric" placeholder="60">
+        </label>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Ressenti</legend>
+        <div class="feeling-row">
+          ${FEELINGS.map(f => `
+            <label class="feeling-choice">
+              <input type="radio" name="feeling" value="${f.key}">
+              <span><i class="fa-regular ${f.icon}"></i>${f.label}</span>
+            </label>`).join("")}
+        </div>
+      </fieldset>
+      <label class="field">
+        <span class="field-label">Note</span>
+        <textarea name="note" rows="2" placeholder="Sensations, douleurs, records…"></textarea>
+      </label>
+    </form>`;
+
+  openSheet({
+    title: "Séance effectuée",
+    body,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save><i class="fa-solid fa-check"></i> Enregistrer la séance</button>`,
+    onMount(el, entry) {
+      const form = $("[data-form]", el);
+      $("[data-save]", el).addEventListener("click", () => {
+        const fd = new FormData(form);
+        const date = String(fd.get("date") || localDateKey());
+        if (date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
+        const duration = parseInt(fd.get("duration"), 10);
+        const log = {
+          date,
+          sessionId: session.id,
+          sportId: sport.id,
+          sessionName: session.name,
+          sportName: sport.name,
+          sportColor: sport.color,
+          sportIcon: sport.icon,
+          doneSets: done,
+          totalSets: total,
+          duration: Number.isFinite(duration) && duration > 0 ? duration : null,
+          feeling: fd.get("feeling") || null,
+          note: String(fd.get("note") || "").trim(),
+          exercises: exercises.map(ex => {
+            const target = computeTarget(ex, sport);
+            return {
+              name: ex.name || "Exercice",
+              sets: setsCount(ex),
+              reps: ex.reps || "",
+              doneSets: Math.min(prog[ex.id] || 0, setsCount(ex)),
+              load: ex.load || "",
+              target: target?.main ? `${fmtNum(target.pct)} % : ${target.main}` : ""
+            };
+          }),
+          createdAt: serverTimestamp()
+        };
+        persist(setDoc(doc(userCol("logs")), log), "Séance enregistrée, bien joué !");
+        setProgress(session.id, {});
+        entry.close(() => render());
+      });
+    }
+  });
+}
+
+function renderHistory() {
+  setHeader({ title: "Historique" });
+  setFab(null);
+  const view = $("#view");
+  const filter = ui.historySport;
+  const logs = state.logs.filter(l => filter === "all" || l.sportId === filter);
+  const sportsWithLogs = state.sports.filter(sp => state.logs.some(l => l.sportId === sp.id));
+
+  // Statistiques
+  const now = Date.now();
+  const thisWeek = weekStart(now);
+  const today = new Date();
+  const monthKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+  const weekCount = logs.filter(l => weekStart(dateKeyToTime(l.date)) === thisWeek).length;
+  const monthCount = logs.filter(l => l.date.startsWith(monthKey)).length;
+  const weeksWithLogs = new Set(logs.map(l => weekStart(dateKeyToTime(l.date))));
+  let streak = 0;
+  let w = weeksWithLogs.has(thisWeek) ? thisWeek : thisWeek - 7 * 86400000;
+  while (weeksWithLogs.has(w)) { streak++; w = weekStart(w - 7 * 86400000); }
+
+  const bars = [];
+  for (let i = 11; i >= 0; i--) {
+    const start = weekStart(thisWeek - i * 7 * 86400000);
+    const count = logs.filter(l => weekStart(dateKeyToTime(l.date)) === start).length;
+    const d = new Date(start);
+    bars.push({
+      value: count,
+      label: d.toLocaleDateString("fr-FR", { day: "numeric", month: "numeric" }),
+      detail: i === 0 ? "cette semaine" : `semaine du ${d.toLocaleDateString("fr-FR", { day: "numeric", month: "long" })}`,
+      highlight: i === 0
+    });
+  }
+
+  // Liste groupée par mois
+  const shown = logs.slice(0, ui.logsShown);
+  const groups = [];
+  shown.forEach(l => {
+    const key = l.date.slice(0, 7);
+    let g = groups[groups.length - 1];
+    if (!g || g.key !== key) { g = { key, items: [] }; groups.push(g); }
+    g.items.push(l);
+  });
+
+  view.innerHTML = `
+    <section class="history-page">
+      ${sportsWithLogs.length > 1 ? `
+        <div class="filter-chips" role="group" aria-label="Filtrer par sport">
+          <button type="button" data-filter="all" aria-pressed="${filter === "all"}">Tous</button>
+          ${sportsWithLogs.map(sp => `<button type="button" data-filter="${sp.id}" aria-pressed="${filter === sp.id}" style="--sport:${sp.color}">${esc(sp.name)}</button>`).join("")}
+        </div>` : ""}
+
+      <div class="stats-row">
+        <div class="stat"><strong>${weekCount}</strong><span>cette semaine</span></div>
+        <div class="stat"><strong>${monthCount}</strong><span>ce mois-ci</span></div>
+        <div class="stat"><strong>${streak}</strong><span>semaine${streak > 1 ? "s" : ""} d’affilée</span></div>
+      </div>
+
+      <section class="card chart-card">
+        <h3 class="block-title">Séances par semaine</h3>
+        <div data-history-chart></div>
+      </section>
+
+      ${logs.length ? groups.map(g => `
+        <section class="block">
+          <h3 class="block-title">${capitalize(fmtDateKey(g.key + "-01", { month: "long", year: "numeric" }))}</h3>
+          <div class="log-list">
+            ${g.items.map(l => {
+              const feeling = FEELINGS.find(f => f.key === l.feeling);
+              const meta = [
+                l.totalSets ? `${l.doneSets} / ${l.totalSets} séries` : "",
+                l.duration ? `${l.duration} min` : ""
+              ].filter(Boolean).join(", ");
+              return `
+                <button type="button" class="log-row" data-log="${esc(l.id)}" style="--sport:${l.sportColor || "var(--primary)"}">
+                  <span class="log-date"><strong>${new Date(dateKeyToTime(l.date)).getDate()}</strong><span>${fmtDateKey(l.date, { weekday: "short" }).replace(".", "")}</span></span>
+                  <span class="log-text">
+                    <strong>${esc(l.sessionName)}</strong>
+                    <span>${esc(l.sportName)}${meta ? `, ${meta}` : ""}</span>
+                  </span>
+                  ${feeling ? `<i class="fa-regular ${feeling.icon} log-feeling" title="${feeling.label}" aria-label="${feeling.label}"></i>` : ""}
+                </button>`;
+            }).join("")}
+          </div>
+        </section>`).join("") : `
+        <div class="empty-state">
+          <p>Aucune séance enregistrée pour l’instant. À la fin d’une séance, appuie sur « Séance effectuée » pour la retrouver ici.</p>
+        </div>`}
+
+      ${logs.length > ui.logsShown ? `<button type="button" class="btn btn-ghost btn-block" data-more>Afficher plus de séances</button>` : ""}
+    </section>`;
+
+  mountBarChart($("[data-history-chart]", view), { bars, unitSingular: "séance", unitPlural: "séances", label: "Séances par semaine sur 12 semaines" });
+
+  $$("[data-filter]", view).forEach(b => b.addEventListener("click", () => { ui.historySport = b.dataset.filter; ui.logsShown = 30; render(); }));
+  $("[data-more]", view)?.addEventListener("click", () => { ui.logsShown += 30; render(); });
+  $$("[data-log]", view).forEach(b => b.addEventListener("click", () => openLogDetail(state.logs.find(l => l.id === b.dataset.log))));
+}
+
+function openLogDetail(log) {
+  if (!log) return;
+  const feeling = FEELINGS.find(f => f.key === log.feeling);
+  openSheet({
+    title: log.sessionName,
+    body: `
+      <div class="log-detail" style="--sport:${log.sportColor || "var(--primary)"}">
+        <p class="log-detail-date">${capitalize(fmtDateKey(log.date, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</p>
+        <div class="log-facts">
+          <span><i class="fa-solid ${log.sportIcon || "fa-dumbbell"}"></i> ${esc(log.sportName)}</span>
+          ${log.totalSets ? `<span><i class="fa-solid fa-list-check"></i> ${log.doneSets} / ${log.totalSets} séries</span>` : ""}
+          ${log.duration ? `<span><i class="fa-regular fa-clock"></i> ${log.duration} min</span>` : ""}
+          ${feeling ? `<span><i class="fa-regular ${feeling.icon}"></i> ${feeling.label}</span>` : ""}
+        </div>
+        ${log.note ? `<p class="log-note">${esc(log.note)}</p>` : ""}
+        ${(log.exercises || []).length ? `
+          <div class="table-wrap">
+            <table class="data-table data-table--left">
+              <thead><tr><th scope="col">Exercice</th><th scope="col">Séries</th><th scope="col">Charge</th></tr></thead>
+              <tbody>
+                ${log.exercises.map(ex => `
+                  <tr class="${ex.doneSets < ex.sets ? "is-partial" : ""}">
+                    <td><strong>${esc(ex.name)}</strong><br><span class="muted">${ex.sets} × ${esc(ex.reps)}${ex.target ? `, ${esc(ex.target)}` : ""}</span></td>
+                    <td>${ex.doneSets} / ${ex.sets}</td>
+                    <td>${esc(ex.load) || "–"}</td>
+                  </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>` : ""}
+      </div>`,
+    footer: `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer de l’historique</button>`,
+    onMount(el, entry) {
+      $("[data-delete]", el).addEventListener("click", async () => {
+        if (!await confirmDialog("Supprimer cette séance de l’historique ?", { confirmLabel: "Supprimer", danger: true })) return;
+        persist(deleteDoc(userDoc("logs", log.id)), "Séance retirée de l’historique");
+        entry.close();
+      });
+    }
+  });
+}
+
+/* =========================================================
    Compte
    ========================================================= */
 
@@ -1527,6 +2404,24 @@ function startListeners() {
     state.ready.sessions = true;
     scheduleRender();
   }, onError));
+  state.unsub.push(onSnapshot(userCol("measures"), snap => {
+    state.measures = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.date).sort((a, b) => a.date.localeCompare(b.date));
+    scheduleRender();
+  }, onError));
+  state.unsub.push(onSnapshot(userCol("maxes"), snap => {
+    state.maxes = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.date);
+    scheduleRender();
+  }, onError));
+  state.unsub.push(onSnapshot(userCol("logs"), snap => {
+    state.logs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .filter(l => l.date)
+      .sort((a, b) => b.date.localeCompare(a.date) || ((b.createdAt?.seconds ?? Infinity) - (a.createdAt?.seconds ?? Infinity)));
+    scheduleRender();
+  }, onError));
+  state.unsub.push(onSnapshot(userDoc("profile", "main"), snap => {
+    state.profile = snap.exists() ? snap.data() : {};
+    scheduleRender();
+  }, onError));
 }
 
 function stopListeners() {
@@ -1567,6 +2462,10 @@ onAuthStateChanged(auth, user => {
     stopListeners();
     state.sports = [];
     state.sessions = [];
+    state.measures = [];
+    state.maxes = [];
+    state.logs = [];
+    state.profile = {};
     imageCache.clear();
     showScreen("login");
   }
