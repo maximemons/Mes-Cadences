@@ -1,7 +1,7 @@
 {
   "name": "mes-cadences-functions",
   "private": true,
-  "description": "Rappels de séance envoyés par notification push (6 h et 17 h)",
+  "description": "Rappels de séance envoyés par notification push (heures réglées dans le compte)",
   "main": "index.js",
   "engines": { "node": "20" },
   "dependencies": {

@@ -1,9 +1,9 @@
-// Service worker de Mes cadences : rappels de séance (6 h et 17 h).
+// Service worker de Mes cadences : rappels de séance (heures réglées dans « Mon compte »).
 // Reçoit le programme depuis la page, décide seul lors d'une synchronisation périodique,
 // et affiche les messages push envoyés par la fonction planifiée (functions/).
 
-const MORNING_HOUR = 6;
-const EVENING_HOUR = 17;
+importScripts("./js/reminders-core.js");
+
 const ICON = "icons/icon-192.png";
 
 // Firebase Cloud Messaging (messages push quand l'appli est fermée)
@@ -67,101 +67,80 @@ function dateKey(d = new Date()) {
 
 const dayIdx = (d = new Date()) => (d.getDay() + 6) % 7; // 0 = lundi
 
-/* ---------------------------------------------------- Contenu des rappels */
+/* ---------------------------------------------------- Rappels */
 
-const listNames = list => list.map(s => `${s.name}${s.sportName ? ` (${s.sportName}${s.optional ? ", facultative" : ""})` : s.optional ? " (facultative)" : ""}`).join(", ");
+const R = self.MCReminders;
+// Rattrapage : un rappel manqué (appli fermée, téléphone en veille) est encore affiché
+// pendant ce délai, sans dépasser minuit
+const CATCH_UP_MIN = 5 * 60;
 
-const sessionUrl = list => (list.length === 1 && list[0].sportId ? `#/sport/${list[0].sportId}/session/${list[0].id}` : "#/");
+const remindersOf = snapshot => R.normalizeReminders(snapshot?.reminders);
+const doneOn = (snapshot, date) => new Set((snapshot?.done || {})[date] || []);
 
-function buildReminder(kind, snapshot, now = new Date()) {
-  if (!snapshot?.enabled) return null;
-  const today = dateKey(now);
-  const day = dayIdx(now);
-  // « optional » est ramené au jour même : une séance peut n'être facultative que certains jours
-  const planned = (snapshot.sessions || [])
-    .filter(s => (s.days || []).includes(day))
-    .map(s => ({ ...s, optional: Array.isArray(s.optionalDays) ? s.optionalDays.includes(day) : !!s.optional }));
-  if (!planned.length) return null;
-  const done = new Set((snapshot.done || {})[today] || []);
-
-  if (kind === "morning") {
-    // Les séances facultatives sont proposées le matin, sans être présentées comme obligatoires
-    const allOptional = planned.every(s => s.optional);
-    return {
-      title: planned.length === 1
-        ? `${allOptional ? "Facultatif aujourd’hui" : "Aujourd’hui"} : ${planned[0].name}`
-        : `${planned.length} séances ${allOptional ? "facultatives " : ""}aujourd’hui`,
-      body: planned.length === 1
-        ? (allOptional ? `${planned[0].sportName || "Séance"} en option, si tu en as envie.` : `${planned[0].sportName || "Séance"} au programme. Bonne séance !`)
-        : `Au programme : ${listNames(planned)}.`,
-      url: sessionUrl(planned),
-      ids: planned.map(s => s.id)
-    };
-  }
-  // Pas de relance pour une séance facultative non faite
-  const pending = planned.filter(s => !s.optional && !done.has(s.id));
-  if (!pending.length) return null;
-  return {
-    title: pending.length === 1 ? `${pending[0].name} n’est pas encore faite` : `${pending.length} séances pas encore faites`,
-    body: pending.length === 1
-      ? `${pending[0].sportName ? `Séance de ${pending[0].sportName.toLowerCase()} prévue` : "Prévue"} aujourd’hui. Si c’est fait, marque-la comme effectuée.`
-      : `${listNames(pending)}. Si c’est fait, marque-les comme effectuées.`,
-    url: sessionUrl(pending),
-    ids: pending.map(s => s.id)
-  };
+function contentFor(r, snapshot, targetDate) {
+  return R.buildReminder(r, snapshot?.sessions || [], targetDate, doneOn(snapshot, targetDate));
 }
 
-async function show(kind, date, content) {
-  const flag = `shown:${kind}:${date}`;
+async function show(rid, date, content) {
+  const flag = `shown:${rid}:${date}`;
   if (await kvGet(flag)) return;
   await kvSet(flag, true);
   await self.registration.showNotification(content.title, {
     body: content.body,
     icon: ICON,
     badge: ICON,
-    tag: `mc-${kind}-${date}`,
+    tag: `mc-${rid}-${date}`,
     renotify: false,
-    data: { url: content.url, kind, date }
+    data: { url: content.url, rid, date }
   });
 }
 
-// Décision locale : fenêtre du matin (6 h – 11 h) et du soir (17 h – 22 h)
+// Décision locale : chaque rappel dont l'heure est passée aujourd'hui (dans la fenêtre de rattrapage)
 async function check(now = new Date()) {
   const snapshot = await kvGet("snapshot");
   if (!snapshot?.enabled) return;
-  const h = now.getHours();
   const today = dateKey(now);
-  if (h >= MORNING_HOUR && h < 12) {
-    const r = buildReminder("morning", snapshot, now);
-    if (r) await show("morning", today, r);
-  }
-  if (h >= EVENING_HOUR && h < 23) {
-    const r = buildReminder("evening", snapshot, now);
-    if (r) await show("evening", today, r);
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  for (const r of remindersOf(snapshot)) {
+    if (!r.enabled) continue;
+    const at = R.parseTime(r.time).total;
+    if (minutes < at || minutes >= at + CATCH_UP_MIN) continue;
+    const target = R.addDays(today, r.daysBefore);
+    const content = contentFor(r, snapshot, target);
+    if (content) await show(r.id, target, content);
   }
 }
 
-// Message de la fonction planifiée : on évite les doublons et les séances validées entre-temps
+// Message de la fonction planifiée : on évite les doublons, les rappels supprimés
+// et les séances validées entre-temps
 async function handlePush(data) {
-  const kind = data.kind === "evening" ? "evening" : data.kind === "morning" ? "morning" : null;
-  if (!kind) return;
+  const rid = data.rid || data.kind; // « kind » : anciens messages (morning / evening)
+  if (!rid) return;
   const date = data.date || dateKey();
   const snapshot = await kvGet("snapshot");
   if (snapshot && snapshot.enabled === false) return;
-  if (kind === "evening" && snapshot) {
-    const done = new Set((snapshot.done || {})[date] || []);
-    const ids = String(data.ids || "").split(",").filter(Boolean);
-    if (ids.length && ids.every(id => done.has(id))) return;
+  if (snapshot) {
+    const r = remindersOf(snapshot).find(x => x.id === rid);
+    if (snapshot.reminders && (!r || !r.enabled)) return;
+    const pending = data.pending === "1" || (!data.rid && data.kind === "evening");
+    if (pending) {
+      const done = doneOn(snapshot, date);
+      const ids = String(data.ids || "").split(",").filter(Boolean);
+      if (ids.length && ids.every(id => done.has(id))) return;
+    }
   }
-  await show(kind, date, { title: data.title || "Mes cadences", body: data.body || "", url: data.url || "#/" });
+  await show(rid, date, { title: data.title || "Mes cadences", body: data.body || "", url: data.url || "#/" });
 }
 
-// Séance validée après le rappel du soir : on retire la notification devenue inutile
+// Séance validée après une relance : on retire la notification devenue inutile
 async function closeObsolete(snapshot) {
   const today = dateKey();
-  if (buildReminder("evening", snapshot)) return;
-  const list = await self.registration.getNotifications({ tag: `mc-evening-${today}` });
-  list.forEach(n => n.close());
+  for (const r of remindersOf(snapshot)) {
+    if (!r.onlyPending) continue;
+    if (r.enabled && snapshot?.enabled && contentFor(r, snapshot, today)) continue;
+    const list = await self.registration.getNotifications({ tag: `mc-${r.id}-${today}` });
+    list.forEach(n => n.close());
+  }
 }
 
 /* ---------------------------------------------------- Événements */
@@ -169,16 +148,23 @@ async function closeObsolete(snapshot) {
 self.addEventListener("message", event => {
   const msg = event.data || {};
   if (msg.type === "snapshot") {
-    event.waitUntil(kvSet("snapshot", msg.snapshot).then(() => closeObsolete(msg.snapshot)));
+    event.waitUntil(kvSet("snapshot", msg.snapshot).then(() => closeObsolete(msg.snapshot)).then(() => check()));
   } else if (msg.type === "check") {
     event.waitUntil(check());
   } else if (msg.type === "push") {
     event.waitUntil(handlePush(msg.data || {}));
   } else if (msg.type === "test") {
     event.waitUntil(kvGet("snapshot").then(snapshot => {
-      const r = buildReminder("morning", { ...snapshot, enabled: true });
+      // Aperçu : le premier rappel actif qui aurait quelque chose à dire, sinon un message générique
+      const today = dateKey();
+      let r = null;
+      for (const rem of remindersOf(snapshot).filter(x => x.enabled)) {
+        r = contentFor({ ...rem, onlyPending: false }, snapshot, R.addDays(today, rem.daysBefore));
+        if (r) break;
+      }
+      const count = remindersOf(snapshot).filter(x => x.enabled).length;
       return self.registration.showNotification(r ? r.title : "Rappels activés", {
-        body: r ? r.body : `Tu seras prévenu à ${MORNING_HOUR} h les jours de séance, et à ${EVENING_HOUR} h si une séance n’est pas faite.`,
+        body: r ? r.body : count ? `${count} rappel${count > 1 ? "s" : ""} programmé${count > 1 ? "s" : ""}. Tu seras prévenu les jours de séance.` : "Aucun rappel programmé : ajoute-en depuis Mon compte.",
         icon: ICON,
         badge: ICON,
         tag: "mc-test",

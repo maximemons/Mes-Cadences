@@ -3,9 +3,12 @@ import { TEMPLATES } from "./templates.js";
 import { openRestTimer, openTimer } from "./timer.js";
 import { mountChart, mountBarChart } from "./charts.js";
 import {
-  MORNING_HOUR, EVENING_HOUR, notifStatus, pushConfigured, initNotifications,
+  notifStatus, pushConfigured, initNotifications,
   enableNotifications, disableNotifications, stopNotificationsForLogout, testNotification, syncSnapshot
 } from "./notifications.js";
+import "./reminders-core.js";
+
+const RM = globalThis.MCReminders;
 import {
   onAuthStateChanged,
   signInWithPopup,
@@ -2945,15 +2948,47 @@ function openLogEditor(log) {
    Compte
    ========================================================= */
 
+// Rappels du compte (communs à tous les appareils) ; par défaut 6 h et 17 h
+const remindersList = () => RM.normalizeReminders(state.profile.reminders);
+
+function saveReminders(list, okMsg) {
+  const clean = RM.normalizeReminders(list);
+  state.profile = { ...state.profile, reminders: clean }; // affichage immédiat, même hors ligne
+  refreshReminders(true);
+  return persist(setDoc(userDoc("profile", "main"), { reminders: clean, updatedAt: serverTimestamp() }, { merge: true }), okMsg);
+}
+
+function reminderRow(r) {
+  const sport = r.sportId ? state.sports.find(sp => sp.id === r.sportId) : null;
+  const t = RM.parseTime(r.time);
+  return `
+    <li class="rem-row ${r.enabled ? "" : "is-off"}">
+      <button type="button" class="rem-main" data-rem-edit="${esc(r.id)}" aria-label="Modifier le rappel de ${esc(RM.fmtTime(r.time))}">
+        <span class="rem-time">${t.h}<small>h</small>${String(t.m).padStart(2, "0")}</span>
+        <span class="rem-text">
+          <strong>${esc(RM.whenLabel(r.daysBefore))}${r.onlyPending ? " · si pas faite" : ""}</strong>
+          <span>${esc(sport ? sport.name : "Tous les sports")}${r.note ? ` · ${esc(r.note)}` : ""}</span>
+        </span>
+      </button>
+      <label class="rem-toggle" title="${r.enabled ? "Désactiver" : "Activer"} ce rappel">
+        <input type="checkbox" data-rem-toggle="${esc(r.id)}" ${r.enabled ? "checked" : ""}>
+        <span class="opt-switch-track" aria-hidden="true"></span>
+        <span class="sr-only">Rappel actif</span>
+      </label>
+    </li>`;
+}
+
 function reminderBlock() {
   const status = notifStatus();
+  const list = remindersList();
+  const active = list.filter(r => r.enabled).length;
   const text = {
     unsupported: "Ce navigateur ne permet pas les notifications. Sur iPhone, ajoute d’abord l’appli à l’écran d’accueil (Partager, Sur l’écran d’accueil) puis ouvre-la depuis l’icône.",
     denied: "Les notifications sont bloquées pour ce site. Autorise-les dans les réglages du navigateur, puis reviens ici.",
-    off: `Une notification à ${MORNING_HOUR} h les jours de séance, et une autre à ${EVENING_HOUR} h si la séance n’est pas encore marquée comme faite.`,
+    off: "Active-les pour recevoir sur cet appareil les rappels programmés ci-dessous.",
     on: pushConfigured()
-      ? `Activés sur cet appareil : ${MORNING_HOUR} h les jours de séance, ${EVENING_HOUR} h si une séance n’est pas faite.`
-      : `Activés sur cet appareil : ${MORNING_HOUR} h et ${EVENING_HOUR} h. Sans le service push configuré, ils arrivent seulement si l’appli est ouverte ou réveillée par le navigateur.`
+      ? `Activés sur cet appareil · ${active} rappel${active > 1 ? "s" : ""} actif${active > 1 ? "s" : ""}.`
+      : `Activés sur cet appareil · ${active} rappel${active > 1 ? "s" : ""} actif${active > 1 ? "s" : ""}. Sans le service push configuré, ils arrivent seulement si l’appli est ouverte ou réveillée par le navigateur.`
   }[status];
   return `
     <section class="reminder-card" data-reminders>
@@ -2964,6 +2999,10 @@ function reminderBlock() {
           <span>${esc(text)}</span>
         </span>
       </div>
+      ${list.length
+        ? `<ul class="rem-list">${list.map(reminderRow).join("")}</ul>`
+        : `<p class="hint">Aucun rappel programmé.</p>`}
+      ${list.length < RM.MAX_REMINDERS ? `<button type="button" class="btn btn-ghost btn-block" data-rem-add><i class="fa-solid fa-plus"></i> Ajouter un rappel</button>` : ""}
       ${status === "off" ? `<button type="button" class="btn btn-primary btn-block" data-notif-on><i class="fa-solid fa-bell"></i> Activer les rappels</button>` : ""}
       ${status === "on" ? `
         <div class="foot-actions">
@@ -2977,7 +3016,9 @@ function bindReminderBlock(el) {
   const host = $("[data-reminders]", el);
   if (!host) return;
   const refresh = () => {
-    host.outerHTML = reminderBlock();
+    const current = $("[data-reminders]", el);
+    if (!current) return;
+    current.outerHTML = reminderBlock();
     bindReminderBlock(el);
   };
   $("[data-notif-on]", host)?.addEventListener("click", async e => {
@@ -3000,6 +3041,120 @@ function bindReminderBlock(el) {
     refresh();
   });
   $("[data-notif-test]", host)?.addEventListener("click", () => testNotification());
+  $("[data-rem-add]", host)?.addEventListener("click", () => openReminderEditor(null, refresh));
+  $$("[data-rem-edit]", host).forEach(btn => btn.addEventListener("click", () => {
+    const r = remindersList().find(x => x.id === btn.dataset.remEdit);
+    if (r) openReminderEditor(r, refresh);
+  }));
+  $$("[data-rem-toggle]", host).forEach(input => input.addEventListener("change", () => {
+    const list = remindersList().map(x => (x.id === input.dataset.remToggle ? { ...x, enabled: input.checked } : x));
+    saveReminders(list, input.checked ? "Rappel activé" : "Rappel désactivé");
+    refresh();
+  }));
+}
+
+function openReminderEditor(reminder, onDone) {
+  const isNew = !reminder;
+  const r = reminder || { id: newId(), time: "20:00", daysBefore: 1, onlyPending: false, sportId: null, note: "", enabled: true };
+  const whenOptions = Array.from({ length: RM.MAX_DAYS_BEFORE + 1 }, (_, n) =>
+    `<option value="${n}" ${n === r.daysBefore ? "selected" : ""}>${esc(RM.whenLabel(n))}</option>`).join("");
+  const sportOptions = state.sports.map(sp =>
+    `<option value="${esc(sp.id)}" ${sp.id === r.sportId ? "selected" : ""}>${esc(sp.name || "Sport")}</option>`).join("");
+
+  let initial = "";
+  let sheetEl = null;
+  const read = el => ({
+    ...r,
+    time: $("[name=time]", el).value,
+    daysBefore: Number($("[name=daysBefore]", el).value),
+    onlyPending: $("[name=daysBefore]", el).value === "0" && $("[name=onlyPending]", el).checked,
+    sportId: $("[name=sportId]", el).value || null,
+    note: $("[name=note]", el).value.trim()
+  });
+
+  openSheet({
+    title: isNew ? "Nouveau rappel" : "Modifier le rappel",
+    body: `
+      <div class="form">
+        <div class="rem-grid">
+          <label class="field">
+            <span class="field-label">Heure</span>
+            <input type="time" name="time" value="${esc(r.time)}" required>
+          </label>
+          <label class="field">
+            <span class="field-label">Quand</span>
+            <select name="daysBefore">${whenOptions}</select>
+          </label>
+        </div>
+
+        <label class="opt-switch" data-pending-row>
+          <input type="checkbox" name="onlyPending" ${r.onlyPending ? "checked" : ""}>
+          <span class="opt-switch-track" aria-hidden="true"></span>
+          <span class="opt-switch-text">
+            <strong>Seulement si la séance n’est pas faite</strong>
+            <span>Relance les séances du jour pas encore marquées comme effectuées (jamais les séances facultatives).</span>
+          </span>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Sport</span>
+          <select name="sportId">
+            <option value="">Tous les sports</option>
+            ${sportOptions}
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Message (facultatif)</span>
+          <input type="text" name="note" value="${esc(r.note)}" maxlength="120" placeholder="ex. Prépare ton sac et ta gourde" autocomplete="off">
+        </label>
+
+        <p class="hint" data-rem-summary></p>
+      </div>`,
+    footer: isNew
+      ? `<button type="button" class="btn btn-primary btn-block" data-save>Ajouter le rappel</button>`
+      : `<div class="foot-actions">
+          <button type="button" class="btn btn-danger-ghost" data-rem-delete><i class="fa-solid fa-trash"></i> Supprimer</button>
+          <button type="button" class="btn btn-primary" data-save>Enregistrer</button>
+        </div>`,
+    isDirty: () => !!sheetEl && JSON.stringify(read(sheetEl)) !== initial,
+    onMount(el, entry) {
+      sheetEl = el;
+      const pendingRow = $("[data-pending-row]", el);
+      const summary = $("[data-rem-summary]", el);
+      const update = () => {
+        const sameDay = $("[name=daysBefore]", el).value === "0";
+        pendingRow.classList.toggle("hidden", !sameDay);
+        const cur = read(el);
+        const sport = state.sports.find(sp => sp.id === cur.sportId);
+        summary.textContent = RM.parseTime(cur.time)
+          ? (cur.daysBefore === 0
+            ? (cur.onlyPending && sameDay
+              ? `À ${RM.fmtTime(cur.time)}, les jours de séance${sport ? ` de ${sport.name}` : ""}, s’il reste une séance à faire.`
+              : `À ${RM.fmtTime(cur.time)}, les jours de séance${sport ? ` de ${sport.name}` : ""}.`)
+            : `À ${RM.fmtTime(cur.time)}, ${cur.daysBefore === 1 ? "la veille" : `${cur.daysBefore} jours avant`} de chaque séance${sport ? ` de ${sport.name}` : ""}.`)
+          : "";
+      };
+      initial = JSON.stringify(read(el));
+      el.addEventListener("input", update);
+      el.addEventListener("change", update);
+      update();
+
+      $("[data-save]", el).addEventListener("click", () => {
+        const cur = read(el);
+        if (!RM.parseTime(cur.time)) { toast("Choisis une heure.", true); $("[name=time]", el).focus(); return; }
+        const next = isNew ? [...remindersList(), cur] : remindersList().map(x => (x.id === cur.id ? cur : x));
+        saveReminders(next, isNew ? "Rappel ajouté" : "Rappel enregistré");
+        entry.close(onDone);
+      });
+      $("[data-rem-delete]", el)?.addEventListener("click", async () => {
+        const ok = await confirmDialog("Supprimer ce rappel ?", { confirmLabel: "Supprimer", danger: true });
+        if (!ok) return;
+        saveReminders(remindersList().filter(x => x.id !== r.id), "Rappel supprimé");
+        entry.close(onDone);
+      });
+    }
+  });
 }
 
 function openAccount() {
@@ -3043,6 +3198,7 @@ function refreshReminders(now = false) {
       });
     syncSnapshot({
       sessions,
+      reminders: remindersList(),
       done: { [today]: [...new Set(state.logs.filter(l => l.date === today).map(l => l.sessionId))] }
     });
   };
@@ -3123,6 +3279,7 @@ function startListeners() {
   state.unsub.push(onSnapshot(userDoc("profile", "main"), snap => {
     state.profile = snap.exists() ? snap.data() : {};
     scheduleRender();
+    refreshReminders();
   }, onError));
 }
 

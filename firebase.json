@@ -4,6 +4,7 @@
   },
   "functions": {
     "source": "functions",
+    "predeploy": ["cp \"$PROJECT_DIR/js/reminders-core.js\" \"$RESOURCE_DIR/reminders-core.js\""],
     "ignore": ["node_modules", ".git", "*.log"]
   },
   "hosting": {

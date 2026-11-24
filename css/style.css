@@ -921,6 +921,34 @@ img { max-width: 100%; display: block; }
 .reminder-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .reminder-text span { font-size: .88rem; color: var(--muted); }
 
+/* Liste des rappels programmés */
+.rem-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rem-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 6px;
+  border-radius: var(--r-md); background: var(--surface-2);
+}
+.rem-row.is-off .rem-main { opacity: .5; }
+.rem-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px;
+  border: 0; background: transparent; padding: 6px; border-radius: var(--r-sm); text-align: left; cursor: pointer;
+}
+.rem-main:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.rem-time {
+  flex: none; min-width: 64px; font-family: var(--font-display);
+  font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+}
+.rem-time small { font-size: .8rem; font-weight: 700; color: var(--muted); margin: 0 1px; }
+.rem-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.rem-text strong { font-size: .92rem; }
+.rem-text span { font-size: .82rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rem-toggle { flex: none; position: relative; cursor: pointer; }
+.rem-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.rem-toggle input:checked + .opt-switch-track { background: var(--primary); box-shadow: none; }
+.rem-toggle input:checked + .opt-switch-track::after { transform: translateX(18px); }
+.rem-toggle input:focus-visible + .opt-switch-track { outline: 3px solid color-mix(in srgb, var(--primary) 60%, transparent); outline-offset: 2px; }
+.rem-toggle .opt-switch-track { display: block; margin-top: 0; }
+.rem-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 12px; }
+
 /* ---------- Séance facultative ---------- */
 
 /* double classe : passe devant les styles « .xxx-text span » des cartes */

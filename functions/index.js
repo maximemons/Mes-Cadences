@@ -1,68 +1,64 @@
-// Rappels de séance : toutes les heures, on regarde l'heure locale de chaque appareil inscrit.
-//  - à 6 h : rappel des séances prévues dans la journée ;
-//  - à 17 h : rappel des séances du jour qui ne sont pas encore dans l'historique
-//    (les séances facultatives ne sont jamais relancées).
+// Rappels de séance : toutes les 5 minutes, on regarde l'heure locale de chaque appareil inscrit
+// et les rappels réglés dans le compte (users/{uid}/profile/main → reminders ; par défaut 6 h et 17 h).
+// Chaque rappel vise les séances du jour même ou d'un jour suivant (la veille, deux jours avant…) ;
+// un rappel « seulement si pas faite » ne relance que les séances du jour absentes de l'historique
+// (jamais les séances facultatives).
 // Les appareils s'inscrivent depuis « Mon compte » (users/{uid}/devices/{deviceId}).
+//
+// reminders-core.js est une copie de js/reminders-core.js (recopiée au déploiement, voir firebase.json).
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { logger } = require("firebase-functions");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
+const R = require("./reminders-core.js");
 
 initializeApp();
 const db = getFirestore();
 
-const WEEKDAYS = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+const STEP_MIN = 5; // doit correspondre à la planification ci-dessous
 
-// Date, heure et jour (0 = lundi) dans le fuseau de l'appareil
-function localParts(now, timeZone) {
+// Date et minute de la journée dans le fuseau de l'appareil
+function localParts(when, timeZone) {
   let parts;
   try {
     parts = new Intl.DateTimeFormat("en-CA", {
       timeZone, year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", hourCycle: "h23", weekday: "short"
-    }).formatToParts(now);
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+    }).formatToParts(when);
   } catch {
-    return localParts(now, "Europe/Paris");
+    return localParts(when, "Europe/Paris");
   }
   const get = type => parts.find(p => p.type === type)?.value;
   return {
     date: `${get("year")}-${get("month")}-${get("day")}`,
-    hour: Number(get("hour")),
-    day: WEEKDAYS[get("weekday")]
+    minutes: Number(get("hour")) * 60 + Number(get("minute"))
   };
 }
 
-const listNames = list => list.map(s => `${s.name} (${s.sportName}${s.optional ? ", facultative" : ""})`).join(", ");
-const sessionUrl = list => (list.length === 1 ? `#/sport/${list[0].sportId}/session/${list[0].id}` : "#/");
-
-function buildMessage(kind, planned, doneIds) {
-  if (kind === "morning") {
-    // Les séances facultatives sont proposées le matin, sans être présentées comme obligatoires
-    const allOptional = planned.every(s => s.optional);
-    return {
-      title: planned.length === 1
-        ? `${allOptional ? "Facultatif aujourd’hui" : "Aujourd’hui"} : ${planned[0].name}`
-        : `${planned.length} séances ${allOptional ? "facultatives " : ""}aujourd’hui`,
-      body: planned.length === 1
-        ? (allOptional ? `${planned[0].sportName || "Séance"} en option, si tu en as envie.` : `${planned[0].sportName} au programme. Bonne séance !`)
-        : `Au programme : ${listNames(planned)}.`,
-      url: sessionUrl(planned),
-      ids: planned.map(s => s.id)
-    };
+// Rappels dont l'heure tombe dans le créneau qui vient de s'écouler (]t − 5 min ; t]),
+// avec la date locale à laquelle ils devaient partir (utile autour de minuit)
+function dueReminders(reminders, slot, tz) {
+  const local = localParts(slot, tz);
+  const due = [];
+  for (const r of reminders) {
+    if (!r.enabled) continue;
+    const diff = (((local.minutes - R.parseTime(r.time).total) % 1440) + 1440) % 1440;
+    if (diff >= STEP_MIN) continue;
+    const fireDate = diff ? localParts(new Date(slot.getTime() - diff * 60000), tz).date : local.date;
+    due.push({ r, fireDate, targetDate: R.addDays(fireDate, r.daysBefore) });
   }
-  // Pas de relance pour une séance facultative non faite
-  const pending = planned.filter(s => !s.optional && !doneIds.has(s.id));
-  if (!pending.length) return null;
-  return {
-    title: pending.length === 1 ? `${pending[0].name} n’est pas encore faite` : `${pending.length} séances pas encore faites`,
-    body: pending.length === 1
-      ? `${pending[0].sportName ? `Séance de ${pending[0].sportName.toLowerCase()} prévue` : "Prévue"} aujourd’hui. Si c’est fait, marque-la comme effectuée.`
-      : `${listNames(pending)}. Si c’est fait, marque-les comme effectuées.`,
-    url: sessionUrl(pending),
-    ids: pending.map(s => s.id)
-  };
+  return due;
+}
+
+// Rappels d'un compte (mis en cache le temps d'un passage)
+async function loadReminders(uid, cache) {
+  if (cache.has(uid)) return cache.get(uid);
+  const snap = await db.collection("users").doc(uid).collection("profile").doc("main").get();
+  const list = R.normalizeReminders(snap.exists ? snap.data().reminders : undefined);
+  cache.set(uid, list);
+  return list;
 }
 
 // Programme d'un compte (mis en cache le temps d'un passage)
@@ -83,44 +79,50 @@ async function loadProgram(uid, cache) {
   return sessions;
 }
 
-async function doneOn(uid, date) {
+async function doneOn(uid, date, cache) {
+  const key = `${uid}|${date}`;
+  if (cache.has(key)) return cache.get(key);
   const snap = await db.collection("users").doc(uid).collection("logs").where("date", "==", date).get();
-  return new Set(snap.docs.map(d => d.data().sessionId));
+  const set = new Set(snap.docs.map(d => d.data().sessionId));
+  cache.set(key, set);
+  return set;
 }
 
 exports.sessionReminders = onSchedule(
-  { schedule: "0 * * * *", timeZone: "Etc/UTC", region: "europe-west1", retryCount: 0 },
-  async () => {
-    const now = new Date();
+  { schedule: `*/${STEP_MIN} * * * *`, timeZone: "Etc/UTC", region: "europe-west1", retryCount: 0 },
+  async event => {
+    // Heure prévue du passage (et non l'heure réelle, qui peut avoir quelques secondes de retard)
+    const planned = new Date(event?.scheduleTime || Date.now());
+    const slot = new Date(Math.floor(planned.getTime() / (STEP_MIN * 60000)) * STEP_MIN * 60000);
     const devices = await db.collectionGroup("devices").get();
-    const cache = new Map();
+    const caches = { reminders: new Map(), program: new Map(), done: new Map() };
     let sent = 0;
 
     for (const device of devices.docs) {
       const data = device.data();
       const uid = device.ref.parent.parent?.id;
       if (!uid || !data.token) continue;
-
-      const local = localParts(now, data.tz || "Europe/Paris");
-      const kind = local.hour === (data.morningHour ?? 6) ? "morning"
-        : local.hour === (data.eveningHour ?? 17) ? "evening" : null;
-      if (!kind) continue;
+      const tz = data.tz || "Europe/Paris";
 
       try {
-        const planned = (await loadProgram(uid, cache))
-          .filter(s => s.days.includes(local.day))
-          .map(s => ({ ...s, optional: s.optionalDays.includes(local.day) }));
-        if (!planned.length) continue;
-        const done = kind === "evening" ? await doneOn(uid, local.date) : new Set();
-        const msg = buildMessage(kind, planned, done);
-        if (!msg) continue;
+        const due = dueReminders(await loadReminders(uid, caches.reminders), slot, tz);
+        if (!due.length) continue;
+        const sessions = await loadProgram(uid, caches.program);
 
-        await getMessaging().send({
-          token: data.token,
-          data: { kind, date: local.date, title: msg.title, body: msg.body, url: msg.url, ids: msg.ids.join(",") },
-          webpush: { headers: { Urgency: "high", TTL: String(4 * 3600) } }
-        });
-        sent++;
+        for (const { r, targetDate } of due) {
+          const done = r.onlyPending ? await doneOn(uid, targetDate, caches.done) : new Set();
+          const msg = R.buildReminder(r, sessions, targetDate, done);
+          if (!msg) continue;
+          await getMessaging().send({
+            token: data.token,
+            data: {
+              rid: r.id, date: targetDate, pending: msg.pending ? "1" : "0",
+              title: msg.title, body: msg.body, url: msg.url, ids: msg.ids.join(",")
+            },
+            webpush: { headers: { Urgency: "high", TTL: String(4 * 3600) } }
+          });
+          sent++;
+        }
       } catch (err) {
         const code = err?.errorInfo?.code || err?.code || "";
         if (code.includes("registration-token-not-registered") || code.includes("invalid-registration-token") || code.includes("invalid-argument")) {
@@ -130,6 +132,6 @@ exports.sessionReminders = onSchedule(
         }
       }
     }
-    logger.info(`Rappels envoyés : ${sent}`);
+    if (sent) logger.info(`Rappels envoyés : ${sent}`);
   }
 );

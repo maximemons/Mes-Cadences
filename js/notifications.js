@@ -1,5 +1,6 @@
-// Rappels de séance : notification à 6 h s'il y a une séance prévue dans la journée,
-// puis à 17 h pour chaque séance du jour qui n'est pas encore marquée comme faite.
+// Rappels de séance : les rappels sont réglés dans « Mon compte » (profile/main → reminders),
+// par défaut 6 h (séances du jour) et 17 h (séances pas encore faites). On peut en ajouter
+// autant qu'on veut, le jour même ou les jours d'avant (la veille pour préparer ses affaires…).
 //
 // Trois mécanismes se complètent, sans doublon (le service worker note ce qu'il a déjà affiché) :
 //  1. Push (Firebase Cloud Messaging + fonction planifiée) : fonctionne appli fermée.
@@ -9,9 +10,9 @@
 
 import { app, db, vapidKey } from "./firebase-config.js";
 import { doc, setDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+import "./reminders-core.js";
 
-export const MORNING_HOUR = 6;
-export const EVENING_HOUR = 17;
+const R = globalThis.MCReminders;
 
 const PREF_KEY = "mc:notif";
 const DEVICE_KEY = "mc:device-id";
@@ -86,8 +87,6 @@ async function registerPush() {
     await setDoc(doc(db, "users", uid, "devices", deviceId()), {
       token,
       tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Paris",
-      morningHour: MORNING_HOUR,
-      eveningHour: EVENING_HOUR,
       updatedAt: serverTimestamp()
     });
     return true;
@@ -114,16 +113,19 @@ async function registerPeriodicSync(reg) {
   } catch { /* non pris en charge */ }
 }
 
-// Prochain passage à 6 h ou 17 h (quelques secondes après l'heure pile)
+// Prochain rappel réglé (quelques secondes après l'heure pile), aujourd'hui ou demain
 function scheduleLocalChecks() {
   clearTimeout(timer);
   if (notifStatus() !== "on") return;
   const now = new Date();
-  const candidates = [MORNING_HOUR, EVENING_HOUR, MORNING_HOUR + 24].map(h => {
+  const times = R.normalizeReminders(lastSnapshot?.reminders).filter(r => r.enabled).map(r => R.parseTime(r.time));
+  const candidates = times.flatMap(t => [0, 1].map(plus => {
     const d = new Date(now);
-    d.setHours(h, 0, 5, 0);
+    d.setDate(d.getDate() + plus);
+    d.setHours(t.h, t.m, 5, 0);
     return d;
-  }).filter(d => d > now);
+  })).filter(d => d > now).sort((a, b) => a - b);
+  if (!candidates.length) return;
   const delay = Math.min(candidates[0] - now, 2 ** 31 - 1);
   timer = setTimeout(() => { post({ type: "check" }); scheduleLocalChecks(); }, delay);
 }
@@ -199,4 +201,6 @@ export function syncSnapshot(snapshot) {
   if (lastSnapshot && JSON.stringify(lastSnapshot) === json) return;
   lastSnapshot = snapshot;
   post({ type: "snapshot", snapshot: { ...snapshot, enabled: notifStatus() === "on" } });
+  // Rappels modifiés : on recale le prochain minuteur (le service worker rattrape seul un rappel passé)
+  if (notifStatus() === "on") scheduleLocalChecks();
 }

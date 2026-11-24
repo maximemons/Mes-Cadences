@@ -18,12 +18,12 @@ Un carnet d’entraînement personnel, pensé pour le téléphone, qui rappelle 
 
 Dans l’éditeur de séance, l’option **Séance facultative** marque une séance « en plus » :
 
-- elle reste proposée à ses jours (accueil, semaine du sport, rappel de 6 h), avec une étiquette **Facultative** et un trait pointillé dans la barre de cadence ;
+- elle reste proposée à ses jours (accueil, semaine du sport, rappels), avec une étiquette **Facultative** et un trait pointillé dans la barre de cadence ;
 - elle n’entre pas dans le nombre de séances **prévues** de la semaine ;
 - **effectuée**, elle compte normalement dans l’historique et les statistiques (semaine, mois, semaines d’affilée, histogramme) ;
-- **pas effectuée**, elle ne pénalise rien : aucune séance manquée, aucune relance à 17 h.
+- **pas effectuée**, elle ne pénalise rien : aucune séance manquée, aucune relance « si pas faite ».
 
-Pour une séance prévue plusieurs jours, la ligne **Facultative le…** permet de choisir les jours concernés : par exemple une séance prévue lundi, mercredi et vendredi, facultative seulement le vendredi. Les autres jours, elle reste une séance prévue comme les autres (comptée, relancée à 17 h si elle n’est pas faite). Par défaut, tous les jours de la séance sont cochés.
+Pour une séance prévue plusieurs jours, la ligne **Facultative le…** permet de choisir les jours concernés : par exemple une séance prévue lundi, mercredi et vendredi, facultative seulement le vendredi. Les autres jours, elle reste une séance prévue comme les autres (comptée, relancée si elle n’est pas faite). Par défaut, tous les jours de la séance sont cochés.
 
 ## Mes repères (charges max, VMA…)
 
@@ -94,27 +94,34 @@ Pour les exercices qui ne se mesurent ni en répétitions, ni en distance, ni en
 
 ## Rappels de séance
 
-- Dans **Mon compte**, le bouton **Activer les rappels** demande l’autorisation de notifier.
-- À **6 h**, une notification rappelle la ou les séances prévues dans la journée (rien les jours de repos).
-- À **17 h**, si une séance du jour n’est pas encore marquée comme effectuée, une nouvelle notification la rappelle (sauf les séances facultatives). Elle disparaît d’elle-même si la séance est validée entre-temps.
+- Dans **Mon compte**, le bouton **Activer les rappels** demande l’autorisation de notifier sur cet appareil.
+- La liste des rappels est réglée dans **Mon compte** et partagée par tous les appareils du compte. Par défaut : **6 h** (séances du jour) et **17 h** (séances du jour pas encore faites).
+- **Ajouter un rappel** : autant qu’on veut (jusqu’à 30), chacun avec :
+  - une **heure** ;
+  - **quand** : le jour même, la veille, ou jusqu’à 6 jours avant la séance (ex. la veille à 20 h 30 pour préparer ses affaires) ;
+  - le jour même, l’option **Seulement si la séance n’est pas faite** (relance, jamais pour les séances facultatives) ;
+  - un **sport** (tous par défaut) ;
+  - un **message** libre ajouté à la notification (ex. « Prépare ton sac et ta gourde »).
+- Un interrupteur met un rappel en pause sans le supprimer ; un appui sur le rappel permet de le modifier ou de le supprimer.
+- Rien n’est envoyé si aucune séance n’est prévue le jour visé. Une relance disparaît d’elle-même si la séance est validée entre-temps.
 - Un appui sur la notification ouvre la séance (ou l’accueil s’il y en a plusieurs).
-- Le réglage est propre à chaque appareil. Le bouton **Tester** affiche tout de suite une notification.
+- Le bouton **Tester** affiche tout de suite un aperçu.
 - Sur iPhone, les notifications web demandent iOS 16.4 ou plus et l’appli ajoutée à l’écran d’accueil.
 
 ### Comment les rappels arrivent
 
 Un navigateur ne peut pas réveiller une page fermée à une heure précise. Trois mécanismes se relaient, sans doublon :
 
-1. **Push serveur** (recommandé) : la fonction `sessionReminders` (dossier `functions/`) tourne toutes les heures et envoie, à 6 h et 17 h heure locale de chaque appareil, une notification par Firebase Cloud Messaging. Fonctionne appli fermée.
+1. **Push serveur** (recommandé) : la fonction `sessionReminders` (dossier `functions/`) tourne toutes les 5 minutes et envoie chaque rappel à son heure (heure locale de chaque appareil, au plus 5 minutes après), par Firebase Cloud Messaging. Fonctionne appli fermée.
 2. **Synchronisation périodique** (Chrome, appli installée) : le navigateur réveille le service worker de temps en temps ; il vérifie s’il faut notifier. L’heure n’est pas garantie.
-3. **Appli ouverte** : minuteurs à 6 h et 17 h, et rattrapage à l’ouverture (entre 6 h et midi, puis entre 17 h et 23 h).
+3. **Appli ouverte** : minuteur calé sur le prochain rappel, et rattrapage à l’ouverture d’un rappel passé depuis moins de 5 h (le jour même).
 
 Sans le push serveur, seuls les mécanismes 2 et 3 fonctionnent.
 
 ### Mettre en route le push
 
 1. Console Firebase › Paramètres du projet › **Cloud Messaging** › Certificats Web Push : **Générer une paire de clés**, puis coller la clé publique dans `vapidKey` (`js/firebase-config.js`).
-2. Passer le projet sur l’offre **Blaze** (nécessaire pour les fonctions planifiées ; un passage par heure reste dans le quota gratuit).
+2. Passer le projet sur l’offre **Blaze** (nécessaire pour les fonctions planifiées ; un passage toutes les 5 minutes reste largement dans le quota gratuit).
 3. Déployer :
 
 ```bash
@@ -163,8 +170,10 @@ js/timer.js             minuteur de repos et chronomètre
 js/charts.js            graphiques SVG (courbes et histogrammes)
 js/templates.js         programmes d’exemple
 js/notifications.js     rappels : autorisation, jeton push, programme envoyé au service worker
+js/reminders-core.js    rappels : modèle, valeurs par défaut, texte des notifications (commun appli / SW / serveur)
 sw.js                   service worker : affichage des rappels, push, clic sur notification
-functions/index.js      fonction planifiée qui envoie les rappels push (6 h et 17 h)
+functions/index.js      fonction planifiée qui envoie les rappels push (toutes les 5 minutes)
+functions/reminders-core.js  copie de js/reminders-core.js (recopiée automatiquement au déploiement)
 firestore.rules         règles d’accès par compte
 firebase.json           configuration Firebase Hosting
 ```
@@ -178,6 +187,6 @@ users/{uid}/images/{id}     image compressée d’un exercice
 users/{uid}/logs/{id}       séances effectuées (historique)
 users/{uid}/measures/{date} mesures (poids kg, masse grasse %, masse musculaire kg, VMA km/h)
 users/{uid}/maxes/{id}      historique des repères (max, VMA…)
-users/{uid}/profile/main    taille
+users/{uid}/profile/main    taille, rappels (heure, jours avant, si pas faite, sport, message, actif)
 users/{uid}/devices/{id}    appareils inscrits aux rappels (jeton push, fuseau horaire)
 ```
