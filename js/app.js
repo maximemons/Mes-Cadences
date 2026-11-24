@@ -155,13 +155,18 @@ function fmtDistance(km) {
   return km >= 1 ? `${fmtNum(km, 2)} km` : `${fmtNum(km * 1000, 0)} m`;
 }
 
-/* Type d'effort d'un exercice : répétitions, distance (km) ou durée */
+/* Type d'effort d'un exercice : répétitions, distance (km), durée,
+   ou « Autre » : seulement des séries, avec un objectif libre facultatif
+   (ex. « 30 s par côté »), sans intensité ni charge. */
 
 const EX_MODES = [
   { key: "reps", label: "Répétitions" },
   { key: "distance", label: "Distance" },
-  { key: "time", label: "Durée" }
+  { key: "time", label: "Durée" },
+  { key: "other", label: "Autre" }
 ];
+
+const seriesLabel = n => `${n} série${n > 1 ? "s" : ""}`;
 
 // "20" → 20 min ; "2:30" → 2 min 30 ; "1h15" → 1 h 15 (résultat en secondes)
 function parseMinutes(str) {
@@ -214,19 +219,24 @@ function exDurationSec(ex) {
   return exMode(ex) === "time" ? parseMinutes(String(ex.reps).replace(/\s*min.*/i, "")) : null;
 }
 
+// Seules les informations renseignées sont affichées : sans valeur, on indique le nombre de séries.
 function volumeLabel(ex) {
   const sets = setsCount(ex);
   const mode = exMode(ex);
-  let unit;
+  let unit = "";
   if (mode === "distance") {
     const d = exDistanceKm(ex);
-    unit = d ? fmtDistance(d) : "? km";
+    if (d) unit = fmtDistance(d);
   } else if (mode === "time") {
     const t = exDurationSec(ex);
-    unit = t ? fmtClock(t) : "? min";
+    if (t) unit = fmtClock(t);
+  } else if (mode === "other") {
+    unit = String(ex.goal || "").trim();
   } else {
-    return `${sets} × ${ex.reps || "?"}`;
+    const reps = String(ex.reps || "").trim();
+    return reps ? `${sets} × ${reps}` : seriesLabel(sets);
   }
+  if (!unit) return seriesLabel(sets);
   return sets > 1 ? `${sets} × ${unit}` : unit;
 }
 
@@ -999,10 +1009,12 @@ function exerciseCard(ex, index, sport, prog) {
   const done = Math.min(prog[ex.id] || 0, sets);
   const target = computeTarget(ex, sport);
   const restSec = parseDuration(ex.rest);
-  const pct = toNum(ex.pct);
+  const mode = exMode(ex);
+  const isOther = mode === "other";
+  const pct = isOther ? NaN : toNum(ex.pct);
 
   let intensity = "";
-  if (target) {
+  if (target && !isOther) {
     intensity = `
       <p class="ex-target">
         <span class="pct">${fmtNum(target.pct)} %</span>
@@ -1029,10 +1041,11 @@ function exerciseCard(ex, index, sport, prog) {
           </button>` : ""}
       </div>
 
+      ${isOther ? "" : `
       <label class="ex-load">
-        <span>${exMode(ex) === "reps" ? "Ma charge" : "Mon temps"}</span>
-        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="${exMode(ex) === "reps" ? "ex. 82,5 kg" : "ex. 24′30″ ou 4′50″/km"}" enterkeyhint="done" autocomplete="off">
-      </label>
+        <span>${mode === "reps" ? "Ma charge" : "Mon temps"}</span>
+        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="${mode === "reps" ? "ex. 82,5 kg" : "ex. 24′30″ ou 4′50″/km"}" enterkeyhint="done" autocomplete="off">
+      </label>`}
 
       <div class="ex-sets">
         <div class="set-dots" role="group" aria-label="Séries réalisées">
@@ -1138,6 +1151,7 @@ function createFromTemplate(key) {
         reps: ex.reps || "",
         distance: ex.distance ?? "",
         duration: ex.duration ?? "",
+        goal: ex.goal || "",
         pct: ex.pct ?? "",
         refId: ex.ref ? refIds[ex.ref] : "",
         rest: ex.rest ?? "",
@@ -1401,11 +1415,15 @@ function exerciseBlock(ex, refs) {
           <span class="field-label">Durée (min)</span>
           <input type="text" data-f="duration" value="${fmtClockInput(dur)}" inputmode="decimal" placeholder="20 ou 2:30">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "" : "hidden"}" data-mode-field="other">
+          <span class="field-label">Objectif (facultatif)</span>
+          <input type="text" data-f="goal" value="${esc(ex.goal || "")}" placeholder="30 s par côté" maxlength="40">
+        </label>
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label" data-pct-label>${ref ? `% de ${esc(ref.label)}` : "Intensité (%)"}</span>
           <input type="text" data-f="pct" value="${esc(ex.pct)}" inputmode="decimal" placeholder="80">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label">Calculée sur</span>
           <select data-f="refId">
             <option value="">Aucun repère</option>
@@ -1416,7 +1434,7 @@ function exerciseBlock(ex, refs) {
           <span class="field-label">Repos</span>
           <input type="text" data-f="rest" value="${ex.rest ? fmtDuration(parseDuration(ex.rest)) : ""}" placeholder="1:30" inputmode="numeric">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label" data-load-label>${mode === "reps" ? "Ma charge" : "Mon temps"}</span>
           <input type="text" data-f="load" value="${esc(ex.load)}" placeholder="${mode === "reps" ? "80 kg" : "24′30″"}">
         </label>
@@ -1445,9 +1463,9 @@ function exerciseBlock(ex, refs) {
 function blankExercise(sport) {
   const paceRef = (sport?.refs || []).find(isPaceRef);
   if (paceRef) {
-    return { id: newId(), name: "", sets: 1, mode: "distance", reps: "", distance: "", duration: "", pct: "", refId: paceRef.id, rest: "", load: "", notes: "", imageId: null };
+    return { id: newId(), name: "", sets: 1, mode: "distance", reps: "", distance: "", duration: "", pct: "", refId: paceRef.id, rest: "", goal: "", load: "", notes: "", imageId: null };
   }
-  return { id: newId(), name: "", sets: 3, mode: "reps", reps: "10", distance: "", duration: "", pct: "", refId: "", rest: 90, load: "", notes: "", imageId: null };
+  return { id: newId(), name: "", sets: 3, mode: "reps", reps: "10", distance: "", duration: "", pct: "", refId: "", rest: 90, goal: "", load: "", notes: "", imageId: null };
 }
 
 function openSessionEditor(sport, session = null) {
@@ -1514,6 +1532,7 @@ function openSessionEditor(sport, session = null) {
         const mode = $("[data-mode]:checked", block)?.value || "reps";
         const distance = toNum(f("distance"));
         const duration = parseMinutes(f("duration"));
+        const isOther = mode === "other";
         return {
           id: block.dataset.exId,
           name: f("name"),
@@ -1522,10 +1541,11 @@ function openSessionEditor(sport, session = null) {
           reps: mode === "reps" ? f("reps") : "",
           distance: mode === "distance" && distance > 0 ? distance : "",
           duration: mode === "time" && duration > 0 ? duration : "",
-          pct: Number.isFinite(pct) ? pct : "",
-          refId: f("refId"),
+          goal: isOther ? f("goal") : "",
+          pct: !isOther && Number.isFinite(pct) ? pct : "",
+          refId: isOther ? "" : f("refId"),
           rest: restSec || "",
-          load: f("load"),
+          load: isOther ? "" : f("load"),
           notes: f("notes")
         };
       })
@@ -1553,10 +1573,11 @@ function openSessionEditor(sport, session = null) {
         const syncMode = (fromUser = false) => {
           const mode = $("[data-mode]:checked", block)?.value || "reps";
           $$("[data-mode-field]", block).forEach(f => f.classList.toggle("hidden", f.dataset.modeField !== mode));
+          $$("[data-hide-other]", block).forEach(f => f.classList.toggle("hidden", mode === "other"));
           $("[data-load-label]", block).textContent = mode === "reps" ? "Ma charge" : "Mon temps";
           $('[data-f="load"]', block).placeholder = mode === "reps" ? "80 kg" : "24′30″";
           const sel = $('[data-f="refId"]', block);
-          if (fromUser && mode !== "reps" && !sel.value) {
+          if (fromUser && (mode === "distance" || mode === "time") && !sel.value) {
             const paceRef = refs.find(isPaceRef);
             if (paceRef) { sel.value = paceRef.id; sel.dispatchEvent(new Event("change")); }
           }
@@ -2502,6 +2523,7 @@ function openCompleteSession(sport, session) {
               sets: setsCount(ex),
               plannedSets: setsCount(ex),
               reps: ex.reps || "",
+              mode: exMode(ex),
               volume: volumeLabel(ex),
               doneSets: Math.min(prog[ex.id] || 0, setsCount(ex)),
               load: ex.load || "",
@@ -2641,7 +2663,7 @@ function openLogDetail(log) {
                   <tr class="${ex.doneSets < ex.sets ? "is-partial" : ""}">
                     <td><strong>${esc(ex.name)}</strong><br><span class="muted">${esc(ex.volume || `${ex.sets} × ${ex.reps}`)}${ex.target ? `, ${esc(ex.target)}` : ""}</span></td>
                     <td>${ex.doneSets} / ${ex.sets}</td>
-                    <td>${esc(ex.load) || "–"}</td>
+                    <td>${ex.mode === "other" ? "" : esc(ex.load) || "–"}</td>
                   </tr>`).join("")}
               </tbody>
             </table>
@@ -2696,10 +2718,11 @@ function openLogEditor(log) {
           <span class="stepper-value" aria-live="polite"><strong data-done>${ex.doneSets}</strong> / <span data-sets>${ex.sets}</span><small>séries</small></span>
           <button type="button" class="icon-btn" data-step="1" aria-label="Ajouter une série"><i class="fa-solid fa-plus"></i></button>
         </div>
+        ${ex.mode === "other" ? "" : `
         <label class="edit-ex-load">
           <span class="sr-only">Charge pour ${esc(ex.name)}</span>
           <input type="text" data-load value="${esc(ex.load || "")}" placeholder="Charge" autocomplete="off">
-        </label>
+        </label>`}
       </div>
     </div>`;
 
@@ -2783,7 +2806,7 @@ function openLogEditor(log) {
           ex.sets = Math.max(ex.plannedSets, next);
           update();
         }));
-        $("[data-load]", row).addEventListener("input", e => { ex.load = e.target.value.trim(); });
+        $("[data-load]", row)?.addEventListener("input", e => { ex.load = e.target.value.trim(); });
         update();
       });
 

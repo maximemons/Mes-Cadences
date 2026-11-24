@@ -25,13 +25,17 @@ Chaque sport a ses repères : charge maximale sur un mouvement, VMA, FTP, etc. D
 
 Chaque exercice affiche :
 
-- le volume (ex. `3 × 10`, `10 × 400 m`) ;
+- le volume (ex. `3 × 10`, `10 × 400 m`) ; seules les valeurs renseignées s’affichent (sans valeur, on indique simplement `3 séries`) ;
 - l’intensité et la valeur calculée ;
 - le champ **Ma charge**, modifiable directement (ex. `82,5 kg` ou `3′55″/km`), enregistré dans le compte ;
 - une pastille par série : un appui valide la série et **lance automatiquement le temps de repos** ;
 - les consignes et l’image de l’exercice (un appui l’agrandit).
 
 La progression du jour (séries validées) est gardée sur l’appareil et remise à zéro le lendemain.
+
+### Type d’effort « Autre »
+
+Pour les exercices qui ne se mesurent ni en répétitions, ni en distance, ni en durée (étirements, mobilité, gainage libre…), le type **Autre** ne garde que le nombre de séries et un **objectif libre facultatif** (ex. `30 s par côté`, `jusqu’à l’échec`). L’intensité, le repère et le champ charge/temps sont masqués, dans l’éditeur comme dans la séance et l’historique.
 
 ## Minuteur et chrono
 
