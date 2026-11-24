@@ -1,0 +1,11 @@
+{
+  "name": "mes-cadences-functions",
+  "private": true,
+  "description": "Rappels de séance envoyés par notification push (6 h et 17 h)",
+  "main": "index.js",
+  "engines": { "node": "20" },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.1.0"
+  }
+}

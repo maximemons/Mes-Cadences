@@ -3,6 +3,10 @@ import { TEMPLATES } from "./templates.js";
 import { openRestTimer, openTimer } from "./timer.js";
 import { mountChart, mountBarChart } from "./charts.js";
 import {
+  MORNING_HOUR, EVENING_HOUR, notifStatus, pushConfigured, initNotifications,
+  enableNotifications, disableNotifications, stopNotificationsForLogout, testNotification, syncSnapshot
+} from "./notifications.js";
+import {
   onAuthStateChanged,
   signInWithPopup,
   signInWithRedirect,
@@ -427,6 +431,39 @@ function confirmDialog(message, { confirmLabel = "Confirmer", danger = false } =
     $("[data-no]", wrap).addEventListener("click", () => done(false));
     $("[data-yes]", wrap).addEventListener("click", () => done(true));
     $("[data-yes]", wrap).focus();
+  });
+}
+
+// Dialogue à plusieurs choix : résout la valeur du bouton choisi, ou null si on annule
+function choiceDialog(message, choices, { detail = "" } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.className = "dialog-backdrop";
+    wrap.innerHTML = `
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-describedby="dialog-msg">
+        <p id="dialog-msg" class="dialog-msg">${esc(message)}</p>
+        ${detail ? `<div class="dialog-detail">${detail}</div>` : ""}
+        <div class="dialog-actions dialog-actions--stack">
+          ${choices.map((c, i) => `<button type="button" class="btn ${c.kind === "primary" ? "btn-primary" : c.kind === "danger" ? "btn-danger" : "btn-ghost"}" data-choice="${i}">${esc(c.label)}</button>`).join("")}
+          <button type="button" class="link-btn" data-no>Annuler</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add("is-open"));
+    const done = value => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.classList.remove("is-open");
+      setTimeout(() => wrap.remove(), 180);
+      resolve(value);
+    };
+    const onKey = e => {
+      if (e.key === "Escape") { e.stopImmediatePropagation(); done(null); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    wrap.addEventListener("click", e => { if (e.target === wrap) done(null); });
+    $("[data-no]", wrap).addEventListener("click", () => done(null));
+    $$("[data-choice]", wrap).forEach(b => b.addEventListener("click", () => done(choices[+b.dataset.choice].value)));
+    $("[data-choice]", wrap)?.focus();
   });
 }
 
@@ -1708,7 +1745,7 @@ const BODY_METRICS = [
   { key: "weight", label: "Poids", short: "Poids", unit: "kg", decimals: 1 },
   { key: "bmi", label: "IMC", short: "IMC", unit: "", decimals: 1 },
   { key: "fat", label: "Masse grasse", short: "MG", unit: "%", decimals: 1 },
-  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "%", decimals: 1 },
+  { key: "muscle", label: "Masse musculaire", short: "MM", unit: "kg", decimals: 1 },
   { key: "vma", label: "VMA", short: "VMA", unit: "km/h", decimals: 1 }
 ];
 
@@ -1799,6 +1836,13 @@ function renderBody() {
     if (mt.key === "bmi") sub = last ? bmiCategory(last.y) : (height ? "Ajoute ton poids" : "Renseigne ta taille");
     else if (mt.key === "vma" && last && prev) sub = `${signed(last.y - prev.y)} km/h depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}, allure ${fmtPace(last.y)}`;
     else if (mt.key === "vma" && last) sub = `Allure à 100 % : ${fmtPace(last.y)}`;
+    else if (mt.key === "muscle" && last) {
+      const sameDay = state.measures.find(m => m.date === last.date);
+      const w = toNum(sameDay?.weight);
+      const share = w ? `${fmtNum(last.y / w * 100)} % du poids` : "";
+      const delta = prev ? `${signed(last.y - prev.y)} kg depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}` : "";
+      sub = [delta, share].filter(Boolean).join(", ") || fmtDateKey(last.date, { day: "numeric", month: "short" });
+    }
     else if (last && prev) sub = `${signed(last.y - prev.y)}${mt.unit ? " " + mt.unit : ""} depuis le ${fmtDateKey(prev.date, { day: "numeric", month: "short" })}`;
     else if (last) sub = fmtDateKey(last.date, { day: "numeric", month: "short" });
     else sub = "Pas encore de mesure";
@@ -1836,7 +1880,7 @@ function renderBody() {
         ${measures.length ? `
           <div class="table-wrap">
             <table class="data-table">
-              <thead><tr><th scope="col">Date</th><th scope="col">Poids<br>kg</th><th scope="col">IMC</th><th scope="col">MG<br>%</th><th scope="col">MM<br>%</th><th scope="col">VMA<br>km/h</th></tr></thead>
+              <thead><tr><th scope="col">Date</th><th scope="col">Poids<br>kg</th><th scope="col">IMC</th><th scope="col">MG<br>%</th><th scope="col">MM<br>kg</th><th scope="col">VMA<br>km/h</th></tr></thead>
               <tbody>
                 ${measures.map(m => {
                   const b = measureValue(m, "bmi");
@@ -1970,6 +2014,33 @@ function openHeightEditor() {
   });
 }
 
+const MEASURE_FIELDS = [
+  { key: "weight", label: "Poids", unit: "kg" },
+  { key: "fat", label: "Masse grasse", unit: "%" },
+  { key: "muscle", label: "Masse musculaire", unit: "kg" },
+  { key: "vma", label: "VMA", unit: "km/h" }
+];
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = toNum(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Valeurs déjà enregistrées pour une date (mesure du suivi, ou VMA venue des repères), null s'il n'y a rien
+function existingValuesOn(date) {
+  if (!date) return null;
+  const m = state.measures.find(x => x.date === date);
+  const vmaRef = vmaByDate().get(date);
+  const prev = {
+    weight: numOrNull(m?.weight),
+    fat: numOrNull(m?.fat),
+    muscle: numOrNull(m?.muscle),
+    vma: numOrNull(m?.vma) ?? numOrNull(vmaRef)
+  };
+  return Object.values(prev).some(v => v !== null) ? prev : null;
+}
+
 function openMeasureEditor(measure = null, prefill = null) {
   const isNew = !measure;
   const height = state.profile.height || "";
@@ -2006,8 +2077,8 @@ function openMeasureEditor(measure = null, prefill = null) {
           <input type="text" name="fat" inputmode="decimal" value="${esc(init.fat)}" placeholder="18">
         </label>
         <label class="field">
-          <span class="field-label">Masse musculaire (%)</span>
-          <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="42">
+          <span class="field-label">Masse musculaire (kg)</span>
+          <input type="text" name="muscle" inputmode="decimal" value="${esc(init.muscle)}" placeholder="34,5">
         </label>
         <label class="field">
           <span class="field-label">VMA (km/h)</span>
@@ -2017,6 +2088,7 @@ function openMeasureEditor(measure = null, prefill = null) {
       <p class="hint">${linked.length
         ? `La VMA met aussi à jour le repère ${linked.map(x => `« ${esc(x.ref.label)} » (${esc(x.sport.name)})`).join(", ")} : tes allures de séance suivent.`
         : "Astuce : ajoute un repère « VMA » en km/h dans ton sport de course pour que tes allures de séance suivent cette valeur."}</p>
+      <p class="hint existing-hint hidden" data-existing aria-live="polite"></p>
       <p class="bmi-preview" data-bmi aria-live="polite"></p>
       ${!isNew ? `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer cette mesure</button>` : ""}
     </form>`;
@@ -2048,6 +2120,18 @@ function openMeasureEditor(measure = null, prefill = null) {
       };
       form.addEventListener("input", preview);
       preview();
+      const showExisting = () => {
+        const hint = $("[data-existing]", el);
+        const date = $("[name=date]", el).value;
+        const prev = (isNew || date !== measure.date) ? existingValuesOn(date) : null;
+        const filled = prev ? MEASURE_FIELDS.filter(f => prev[f.key] !== null) : [];
+        hint.classList.toggle("hidden", !filled.length);
+        hint.textContent = filled.length
+          ? `Déjà saisi ce jour : ${filled.map(f => `${f.label.toLowerCase()} ${fmtNum(prev[f.key], 2)}${f.unit ? " " + f.unit : ""}`).join(", ")}. Les champs laissés vides garderont ces valeurs.`
+          : "";
+      };
+      $("[name=date]", el).addEventListener("change", showExisting);
+      showExisting();
       if (isNew) setTimeout(() => $("[name=weight]", el).focus(), 250);
 
       $("[data-save]", el).addEventListener("click", async () => {
@@ -2062,17 +2146,40 @@ function openMeasureEditor(measure = null, prefill = null) {
         if (data.vma !== null && !(data.vma >= 5 && data.vma <= 30)) return toast("VMA attendue entre 5 et 30 km/h.", true);
         if (data.weight !== null && !(data.weight >= 20 && data.weight <= 400)) return toast("Poids attendu entre 20 et 400 kg.", true);
         if (data.fat !== null && !(data.fat >= 1 && data.fat <= 80)) return toast("Masse grasse attendue entre 1 et 80 %.", true);
-        if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 90)) return toast("Masse musculaire attendue entre 5 et 90 %.", true);
+        if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 150)) return toast("Masse musculaire attendue entre 5 et 150 kg.", true);
         if (h !== null && !(h >= 80 && h <= 250)) return toast("Taille attendue entre 80 et 250 cm.", true);
         if (Object.values(data).some(v => v !== null && !Number.isFinite(v))) return toast("Une valeur n’est pas un nombre.", true);
 
-        const replacing = state.measures.find(m => m.date === d.date);
-        if (replacing && (isNew || measure.date !== d.date)) {
-          if (!await confirmDialog(`Une mesure existe déjà le ${fmtDateKey(d.date)}. La remplacer ?`, { confirmLabel: "Remplacer" })) return;
+        // Nouvelle saisie sur un jour qui a déjà des données : on complète au lieu de remplacer.
+        // Les champs laissés vides gardent l'ancienne valeur ; en cas de valeur différente, on demande.
+        let finalData = data;
+        let merged = false;
+        if (isNew || measure.date !== d.date) {
+          const prev = existingValuesOn(d.date);
+          if (prev) {
+            const conflicts = MEASURE_FIELDS.filter(f => data[f.key] !== null && prev[f.key] !== null && prev[f.key] !== data[f.key]);
+            finalData = Object.fromEntries(MEASURE_FIELDS.map(f => [f.key, data[f.key] ?? prev[f.key]]));
+            merged = true;
+            if (conflicts.length) {
+              const detail = `<ul class="conflict-list">${conflicts.map(f => `
+                <li><span>${esc(f.label)}</span><span><s>${fmtNum(prev[f.key], 2)}</s> → <strong>${fmtNum(data[f.key], 2)}</strong> ${esc(f.unit)}</span></li>`).join("")}</ul>`;
+              const choice = await choiceDialog(
+                `Tu as déjà envoyé ${conflicts.length > 1 ? "ces valeurs" : "cette valeur"} le ${fmtDateKey(d.date)}. Écraser avec la nouvelle saisie ?`,
+                [
+                  { label: "Écraser", value: "overwrite", kind: "primary" },
+                  { label: "Garder les anciennes valeurs", value: "keep" }
+                ],
+                { detail }
+              );
+              if (!choice) return;
+              if (choice === "keep") conflicts.forEach(f => { finalData[f.key] = prev[f.key]; });
+            }
+          }
         }
+        if (finalData.muscle !== null && finalData.weight !== null && finalData.muscle >= finalData.weight) return toast("La masse musculaire doit être inférieure au poids.", true);
 
         const batch = writeBatch(db);
-        batch.set(userDoc("measures", d.date), { date: d.date, ...data, updatedAt: serverTimestamp() });
+        batch.set(userDoc("measures", d.date), { date: d.date, ...finalData, updatedAt: serverTimestamp() });
         if (!isNew && measure.date !== d.date) batch.delete(userDoc("measures", measure.date));
         if (h !== null && h !== toNum(state.profile.height)) {
           batch.set(userDoc("profile", "main"), { height: h, updatedAt: serverTimestamp() }, { merge: true });
@@ -2086,16 +2193,16 @@ function openMeasureEditor(measure = null, prefill = null) {
             batch.delete(userDoc("maxes", maxDocId(ref.id, oldDate)));
             entries = entries.filter(e => e.date !== oldDate);
           }
-          if (data.vma !== null) {
+          if (finalData.vma !== null) {
             batch.set(userDoc("maxes", maxDocId(ref.id, d.date)), {
-              sportId: sport.id, refId: ref.id, date: d.date, value: data.vma, updatedAt: serverTimestamp()
+              sportId: sport.id, refId: ref.id, date: d.date, value: finalData.vma, updatedAt: serverTimestamp()
             });
-            entries = entries.filter(e => e.date !== d.date).concat({ id: maxDocId(ref.id, d.date), date: d.date, value: data.vma });
+            entries = entries.filter(e => e.date !== d.date).concat({ id: maxDocId(ref.id, d.date), date: d.date, value: finalData.vma });
           }
           syncRefValue(sport, ref.id, entries);
         });
 
-        persist(batch.commit(), "Mesure enregistrée");
+        persist(batch.commit(), merged ? "Mesure du jour complétée" : "Mesure enregistrée");
         entry.close();
       });
 
@@ -2393,6 +2500,7 @@ function openCompleteSession(sport, session) {
             return {
               name: ex.name || "Exercice",
               sets: setsCount(ex),
+              plannedSets: setsCount(ex),
               reps: ex.reps || "",
               volume: volumeLabel(ex),
               doneSets: Math.min(prog[ex.id] || 0, setsCount(ex)),
@@ -2523,6 +2631,7 @@ function openLogDetail(log) {
           ${feeling ? `<span><i class="fa-regular ${feeling.icon}"></i> ${feeling.label}</span>` : ""}
         </div>
         ${log.note ? `<p class="log-note">${esc(log.note)}</p>` : ""}
+        ${log.updatedAt ? `<p class="hint">Modifiée après enregistrement.</p>` : ""}
         ${(log.exercises || []).length ? `
           <div class="table-wrap">
             <table class="data-table data-table--left">
@@ -2538,11 +2647,172 @@ function openLogDetail(log) {
             </table>
           </div>` : ""}
       </div>`,
-    footer: `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer de l’historique</button>`,
+    footer: `
+      <div class="foot-actions">
+        <button type="button" class="btn btn-danger-ghost" data-delete><i class="fa-solid fa-trash"></i> Supprimer</button>
+        <button type="button" class="btn btn-primary" data-edit style="--sport:${log.sportColor || "var(--primary)"}"><i class="fa-solid fa-pen"></i> Modifier</button>
+      </div>`,
     onMount(el, entry) {
       $("[data-delete]", el).addEventListener("click", async () => {
         if (!await confirmDialog("Supprimer cette séance de l’historique ?", { confirmLabel: "Supprimer", danger: true })) return;
         persist(deleteDoc(userDoc("logs", log.id)), "Séance retirée de l’historique");
+        entry.close();
+      });
+      $("[data-edit]", el).addEventListener("click", () => {
+        entry.close(() => openLogEditor(log));
+      });
+    }
+  });
+}
+
+// Correction d'une séance enregistrée : séries faites, charges, date, durée, ressenti, note
+function openLogEditor(log) {
+  if (!log) return;
+  const exercises = (log.exercises || []).map(ex => ({
+    ...ex,
+    sets: Math.max(0, +ex.sets || 0),
+    doneSets: Math.max(0, +ex.doneSets || 0),
+    plannedSets: Math.max(0, +ex.plannedSets || +ex.sets || 0)
+  }));
+  const init = {
+    date: log.date,
+    duration: log.duration ? String(log.duration) : "",
+    feeling: log.feeling || "",
+    note: log.note || ""
+  };
+  const snapshot = () => JSON.stringify([read(), exercises.map(ex => [ex.doneSets, ex.sets, ex.load || ""])]);
+  let form;
+  let initial = "";
+
+  const exRow = (ex, i) => `
+    <div class="edit-ex ${ex.doneSets < ex.sets ? "is-partial" : ""}" data-ex="${i}">
+      <div class="edit-ex-head">
+        <strong>${esc(ex.name)}</strong>
+        <span class="muted">${esc(ex.volume || `${ex.sets} × ${ex.reps}`)}</span>
+      </div>
+      <div class="edit-ex-controls">
+        <div class="stepper" role="group" aria-label="Séries faites : ${esc(ex.name)}">
+          <button type="button" class="icon-btn" data-step="-1" aria-label="Retirer une série"><i class="fa-solid fa-minus"></i></button>
+          <span class="stepper-value" aria-live="polite"><strong data-done>${ex.doneSets}</strong> / <span data-sets>${ex.sets}</span><small>séries</small></span>
+          <button type="button" class="icon-btn" data-step="1" aria-label="Ajouter une série"><i class="fa-solid fa-plus"></i></button>
+        </div>
+        <label class="edit-ex-load">
+          <span class="sr-only">Charge pour ${esc(ex.name)}</span>
+          <input type="text" data-load value="${esc(ex.load || "")}" placeholder="Charge" autocomplete="off">
+        </label>
+      </div>
+    </div>`;
+
+  const body = `
+    <form class="form" data-form novalidate style="--sport:${log.sportColor || "var(--primary)"}">
+      <div class="complete-summary">
+        <span class="complete-count" data-total-done>0<small> / 0</small></span>
+        <span>séries faites. Une série ajoutée au-delà du programme compte comme une série en plus.</span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Date</span>
+          <input type="date" name="date" value="${esc(init.date)}" max="${localDateKey()}">
+        </label>
+        <label class="field">
+          <span class="field-label">Durée (min)</span>
+          <input type="text" name="duration" inputmode="numeric" value="${esc(init.duration)}" placeholder="60">
+        </label>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Ressenti</legend>
+        <div class="feeling-row">
+          ${FEELINGS.map(f => `
+            <label class="feeling-choice">
+              <input type="radio" name="feeling" value="${f.key}" ${init.feeling === f.key ? "checked" : ""}>
+              <span><i class="fa-regular ${f.icon}"></i>${f.label}</span>
+            </label>`).join("")}
+        </div>
+        <span class="hint">Touche à nouveau un ressenti pour le retirer.</span>
+      </fieldset>
+      <label class="field">
+        <span class="field-label">Commentaire</span>
+        <textarea name="note" rows="3" placeholder="Sensations, douleurs, records…">${esc(init.note)}</textarea>
+      </label>
+      ${exercises.length ? `
+        <fieldset class="field">
+          <legend class="field-label">Exercices</legend>
+          <div class="edit-ex-list">${exercises.map(exRow).join("")}</div>
+        </fieldset>` : ""}
+    </form>`;
+
+  function read() {
+    const fd = new FormData(form);
+    return {
+      date: String(fd.get("date") || ""),
+      duration: String(fd.get("duration") || "").trim(),
+      feeling: String(fd.get("feeling") || ""),
+      note: String(fd.get("note") || "").trim()
+    };
+  }
+
+  openSheet({
+    title: `Modifier : ${log.sessionName}`,
+    body,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save style="--sport:${log.sportColor || "var(--primary)"}">Enregistrer les modifications</button>`,
+    isDirty: () => snapshot() !== initial,
+    onMount(el, entry) {
+      form = $("[data-form]", el);
+      initial = snapshot();
+
+      const refreshTotal = () => {
+        const done = exercises.reduce((n, ex) => n + ex.doneSets, 0);
+        const total = exercises.reduce((n, ex) => n + ex.sets, 0);
+        $("[data-total-done]", el).innerHTML = `${done}<small> / ${total}</small>`;
+      };
+      refreshTotal();
+
+      $$("[data-ex]", el).forEach(row => {
+        const ex = exercises[+row.dataset.ex];
+        const update = () => {
+          $("[data-done]", row).textContent = ex.doneSets;
+          $("[data-sets]", row).textContent = ex.sets;
+          row.classList.toggle("is-partial", ex.doneSets < ex.sets);
+          $("[data-step='-1']", row).disabled = ex.doneSets === 0;
+          refreshTotal();
+        };
+        $$("[data-step]", row).forEach(b => b.addEventListener("click", () => {
+          const next = Math.max(0, Math.min(50, ex.doneSets + +b.dataset.step));
+          ex.doneSets = next;
+          // Au-delà du programme, la série ajoutée s'ajoute aussi au total ; en retirant, on revient au programme
+          ex.sets = Math.max(ex.plannedSets, next);
+          update();
+        }));
+        $("[data-load]", row).addEventListener("input", e => { ex.load = e.target.value.trim(); });
+        update();
+      });
+
+      // Un second appui sur le ressenti sélectionné le retire
+      $$("[name=feeling]", el).forEach(input => {
+        let wasChecked = false;
+        input.parentElement.addEventListener("pointerdown", () => { wasChecked = input.checked; });
+        input.addEventListener("click", () => {
+          if (wasChecked) { input.checked = false; wasChecked = false; }
+        });
+      });
+
+      $("[data-save]", el).addEventListener("click", () => {
+        const d = read();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return toast("Choisis une date.", true);
+        if (d.date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
+        const duration = parseInt(d.duration, 10);
+        if (d.duration && !(duration > 0)) return toast("La durée doit être un nombre de minutes.", true);
+        const cleanEx = exercises.map(ex => ({ ...ex, load: ex.load || "" }));
+        persist(updateDoc(userDoc("logs", log.id), {
+          date: d.date,
+          duration: duration > 0 ? duration : null,
+          feeling: d.feeling || null,
+          note: d.note,
+          exercises: cleanEx,
+          doneSets: exercises.reduce((n, ex) => n + ex.doneSets, 0),
+          totalSets: exercises.reduce((n, ex) => n + ex.sets, 0),
+          updatedAt: serverTimestamp()
+        }), "Séance modifiée");
         entry.close();
       });
     }
@@ -2553,6 +2823,63 @@ function openLogDetail(log) {
    Compte
    ========================================================= */
 
+function reminderBlock() {
+  const status = notifStatus();
+  const text = {
+    unsupported: "Ce navigateur ne permet pas les notifications. Sur iPhone, ajoute d’abord l’appli à l’écran d’accueil (Partager, Sur l’écran d’accueil) puis ouvre-la depuis l’icône.",
+    denied: "Les notifications sont bloquées pour ce site. Autorise-les dans les réglages du navigateur, puis reviens ici.",
+    off: `Une notification à ${MORNING_HOUR} h les jours de séance, et une autre à ${EVENING_HOUR} h si la séance n’est pas encore marquée comme faite.`,
+    on: pushConfigured()
+      ? `Activés sur cet appareil : ${MORNING_HOUR} h les jours de séance, ${EVENING_HOUR} h si une séance n’est pas faite.`
+      : `Activés sur cet appareil : ${MORNING_HOUR} h et ${EVENING_HOUR} h. Sans le service push configuré, ils arrivent seulement si l’appli est ouverte ou réveillée par le navigateur.`
+  }[status];
+  return `
+    <section class="reminder-card" data-reminders>
+      <div class="reminder-head">
+        <span class="reminder-icon ${status === "on" ? "is-on" : ""}"><i class="fa-solid ${status === "on" ? "fa-bell" : "fa-bell-slash"}"></i></span>
+        <span class="reminder-text">
+          <strong>Rappels de séance</strong>
+          <span>${esc(text)}</span>
+        </span>
+      </div>
+      ${status === "off" ? `<button type="button" class="btn btn-primary btn-block" data-notif-on><i class="fa-solid fa-bell"></i> Activer les rappels</button>` : ""}
+      ${status === "on" ? `
+        <div class="foot-actions">
+          <button type="button" class="btn btn-ghost" data-notif-test>Tester</button>
+          <button type="button" class="btn btn-ghost" data-notif-off>Désactiver</button>
+        </div>` : ""}
+    </section>`;
+}
+
+function bindReminderBlock(el) {
+  const host = $("[data-reminders]", el);
+  if (!host) return;
+  const refresh = () => {
+    host.outerHTML = reminderBlock();
+    bindReminderBlock(el);
+  };
+  $("[data-notif-on]", host)?.addEventListener("click", async e => {
+    e.currentTarget.disabled = true;
+    try {
+      const res = await enableNotifications();
+      if (!res.ok) toast(res.permission === "denied" ? "Notifications refusées par le navigateur." : "Notifications non autorisées.", true);
+      else {
+        refreshReminders(true);
+        toast(res.push || !pushConfigured() ? "Rappels activés" : "Rappels activés, mais l’inscription au push a échoué.", !res.push && pushConfigured());
+      }
+    } catch {
+      toast("Ce navigateur ne permet pas les notifications.", true);
+    }
+    refresh();
+  });
+  $("[data-notif-off]", host)?.addEventListener("click", async () => {
+    await disableNotifications();
+    toast("Rappels désactivés");
+    refresh();
+  });
+  $("[data-notif-test]", host)?.addEventListener("click", () => testNotification());
+}
+
 function openAccount() {
   const u = state.user;
   openSheet({
@@ -2562,14 +2889,42 @@ function openAccount() {
         ${u.photoURL ? `<img class="account-avatar" src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">` : `<span class="account-avatar account-avatar--empty"><i class="fa-solid fa-user"></i></span>`}
         <p class="account-name">${esc(u.displayName || "Connecté avec Google")}</p>
         <p class="muted">Tes programmes sont liés à ton compte et visibles par toi seul.</p>
-      </div>`,
+      </div>
+      ${reminderBlock()}`,
     footer: `<button type="button" class="btn btn-ghost btn-block" data-logout><i class="fa-solid fa-right-from-bracket"></i> Se déconnecter</button>`,
     onMount(el, entry) {
-      $("[data-logout]", el).addEventListener("click", () => {
+      bindReminderBlock(el);
+      $("[data-logout]", el).addEventListener("click", async e => {
+        e.currentTarget.disabled = true;
+        await stopNotificationsForLogout();
         entry.close(() => signOut(auth));
       });
     }
   });
+}
+
+/* =========================================================
+   Rappels : le service worker reçoit le programme et les séances faites
+   ========================================================= */
+
+let reminderTimer;
+function refreshReminders(now = false) {
+  clearTimeout(reminderTimer);
+  const run = () => {
+    if (!state.user || !state.ready.sports || !state.ready.sessions) return;
+    const today = localDateKey();
+    const sessions = state.sessions
+      .filter(s => sportOf(s) && (s.days || []).length)
+      .map(s => {
+        const sp = sportOf(s);
+        return { id: s.id, name: s.name || "Séance", sportId: sp.id, sportName: sp.name || "", days: s.days };
+      });
+    syncSnapshot({
+      sessions,
+      done: { [today]: [...new Set(state.logs.filter(l => l.date === today).map(l => l.sessionId))] }
+    });
+  };
+  if (now) run(); else reminderTimer = setTimeout(run, 400);
 }
 
 /* =========================================================
@@ -2620,11 +2975,13 @@ function startListeners() {
     state.sports = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
     state.ready.sports = true;
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userCol("sessions"), snap => {
     state.sessions = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
     state.ready.sessions = true;
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userCol("measures"), snap => {
     state.measures = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.date).sort((a, b) => a.date.localeCompare(b.date));
@@ -2639,6 +2996,7 @@ function startListeners() {
       .filter(l => l.date)
       .sort((a, b) => b.date.localeCompare(a.date) || ((b.createdAt?.seconds ?? Infinity) - (a.createdAt?.seconds ?? Infinity)));
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userDoc("profile", "main"), snap => {
     state.profile = snap.exists() ? snap.data() : {};
@@ -2680,6 +3038,7 @@ onAuthStateChanged(auth, user => {
     showScreen("app");
     renderLoading();
     startListeners();
+    initNotifications(user.uid);
   } else {
     stopListeners();
     state.sports = [];

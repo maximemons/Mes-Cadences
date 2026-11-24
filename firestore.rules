@@ -1,7 +1,8 @@
 rules_version = '2';
 
 // Chaque compte ne voit et ne modifie que ses propres données :
-// users/{uid}/sports, users/{uid}/sessions, users/{uid}/images
+// users/{uid}/sports, sessions, images, logs, measures, maxes, profile, devices
+// (devices : jetons de notification de chaque appareil, lus par la fonction planifiée)
 service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{userId}/{document=**} {

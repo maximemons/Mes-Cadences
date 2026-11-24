@@ -49,13 +49,16 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 
 - Onglet **Historique** : séances de la semaine, du mois et nombre de semaines d’affilée avec au moins une séance.
 - Histogramme des séances par semaine sur les 12 dernières semaines.
-- Liste des séances par mois, filtrable par sport ; un appui ouvre le détail (et permet de la supprimer).
+- Liste des séances par mois, filtrable par sport ; un appui ouvre le détail.
+- **Modifier** une séance enregistrée : ajouter ou retirer une série faite sur chaque exercice (une série ajoutée au-delà du programme compte comme une série en plus), corriger la charge, la date, la durée, changer ou retirer le ressenti, ajouter ou modifier le commentaire.
+- **Supprimer** une séance de l’historique.
 
 ## Suivi personnel
 
-- Onglet **Suivi** : poids, taille, masse grasse, masse musculaire et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
+- Onglet **Suivi** : poids, taille, masse grasse (%), masse musculaire (kg) et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
 - La VMA est partagée avec le repère « VMA » (en km/h) des sports : la saisir dans le suivi met à jour les allures des séances, et la modifier dans les repères l’ajoute au suivi.
 - Une mesure par jour, modifiable ou supprimable depuis le tableau récapitulatif.
+- Plusieurs saisies le même jour se complètent : les nouvelles valeurs s’ajoutent, les champs laissés vides gardent ce qui avait déjà été envoyé. Si une valeur déjà saisie ce jour-là est différente, une fenêtre propose d’**écraser** ou de **garder les anciennes valeurs**. Le formulaire indique ce qui a déjà été saisi à la date choisie.
 - Graphique d’évolution pour chaque donnée (3 mois, 1 an, tout), avec la zone d’IMC normal.
 - Ces données de santé restent dans l’espace privé du compte ; un bouton permet de supprimer toutes ses mesures.
 
@@ -73,6 +76,38 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 - Dans un sport qui a une VMA, un nouvel exercice est créé en mode Distance avec la VMA déjà sélectionnée.
 - Les exercices se réordonnent avec les flèches.
 - Les images sont redimensionnées et compressées sur le téléphone avant l’envoi.
+
+## Rappels de séance
+
+- Dans **Mon compte**, le bouton **Activer les rappels** demande l’autorisation de notifier.
+- À **6 h**, une notification rappelle la ou les séances prévues dans la journée (rien les jours de repos).
+- À **17 h**, si une séance du jour n’est pas encore marquée comme effectuée, une nouvelle notification la rappelle. Elle disparaît d’elle-même si la séance est validée entre-temps.
+- Un appui sur la notification ouvre la séance (ou l’accueil s’il y en a plusieurs).
+- Le réglage est propre à chaque appareil. Le bouton **Tester** affiche tout de suite une notification.
+- Sur iPhone, les notifications web demandent iOS 16.4 ou plus et l’appli ajoutée à l’écran d’accueil.
+
+### Comment les rappels arrivent
+
+Un navigateur ne peut pas réveiller une page fermée à une heure précise. Trois mécanismes se relaient, sans doublon :
+
+1. **Push serveur** (recommandé) : la fonction `sessionReminders` (dossier `functions/`) tourne toutes les heures et envoie, à 6 h et 17 h heure locale de chaque appareil, une notification par Firebase Cloud Messaging. Fonctionne appli fermée.
+2. **Synchronisation périodique** (Chrome, appli installée) : le navigateur réveille le service worker de temps en temps ; il vérifie s’il faut notifier. L’heure n’est pas garantie.
+3. **Appli ouverte** : minuteurs à 6 h et 17 h, et rattrapage à l’ouverture (entre 6 h et midi, puis entre 17 h et 23 h).
+
+Sans le push serveur, seuls les mécanismes 2 et 3 fonctionnent.
+
+### Mettre en route le push
+
+1. Console Firebase › Paramètres du projet › **Cloud Messaging** › Certificats Web Push : **Générer une paire de clés**, puis coller la clé publique dans `vapidKey` (`js/firebase-config.js`).
+2. Passer le projet sur l’offre **Blaze** (nécessaire pour les fonctions planifiées ; un passage par heure reste dans le quota gratuit).
+3. Déployer :
+
+```bash
+cd functions && npm install && cd ..
+firebase deploy --only functions,firestore:rules,hosting
+```
+
+4. Sur chaque appareil, désactiver puis réactiver les rappels (ou rouvrir l’appli) pour enregistrer son jeton.
 
 ## Compte
 
@@ -112,6 +147,9 @@ js/app.js               authentification, navigation, vues, éditeurs
 js/timer.js             minuteur de repos et chronomètre
 js/charts.js            graphiques SVG (courbes et histogrammes)
 js/templates.js         programmes d’exemple
+js/notifications.js     rappels : autorisation, jeton push, programme envoyé au service worker
+sw.js                   service worker : affichage des rappels, push, clic sur notification
+functions/index.js      fonction planifiée qui envoie les rappels push (6 h et 17 h)
 firestore.rules         règles d’accès par compte
 firebase.json           configuration Firebase Hosting
 ```
@@ -123,7 +161,8 @@ users/{uid}/sports/{id}     nom, icône, couleur, repères
 users/{uid}/sessions/{id}   sportId, nom, jours, notes, exercices
 users/{uid}/images/{id}     image compressée d’un exercice
 users/{uid}/logs/{id}       séances effectuées (historique)
-users/{uid}/measures/{date} mesures corporelles (une par jour)
+users/{uid}/measures/{date} mesures (poids kg, masse grasse %, masse musculaire kg, VMA km/h)
 users/{uid}/maxes/{id}      historique des repères (max, VMA…)
 users/{uid}/profile/main    taille
+users/{uid}/devices/{id}    appareils inscrits aux rappels (jeton push, fuseau horaire)
 ```
