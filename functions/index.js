@@ -1,6 +1,7 @@
 // Rappels de séance : toutes les heures, on regarde l'heure locale de chaque appareil inscrit.
 //  - à 6 h : rappel des séances prévues dans la journée ;
-//  - à 17 h : rappel des séances du jour qui ne sont pas encore dans l'historique.
+//  - à 17 h : rappel des séances du jour qui ne sont pas encore dans l'historique
+//    (les séances facultatives ne sont jamais relancées).
 // Les appareils s'inscrivent depuis « Mon compte » (users/{uid}/devices/{deviceId}).
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");
@@ -33,19 +34,26 @@ function localParts(now, timeZone) {
   };
 }
 
-const listNames = list => list.map(s => `${s.name} (${s.sportName})`).join(", ");
+const listNames = list => list.map(s => `${s.name} (${s.sportName}${s.optional ? ", facultative" : ""})`).join(", ");
 const sessionUrl = list => (list.length === 1 ? `#/sport/${list[0].sportId}/session/${list[0].id}` : "#/");
 
 function buildMessage(kind, planned, doneIds) {
   if (kind === "morning") {
+    // Les séances facultatives sont proposées le matin, sans être présentées comme obligatoires
+    const allOptional = planned.every(s => s.optional);
     return {
-      title: planned.length === 1 ? `Aujourd’hui : ${planned[0].name}` : `${planned.length} séances aujourd’hui`,
-      body: planned.length === 1 ? `${planned[0].sportName} au programme. Bonne séance !` : `Au programme : ${listNames(planned)}.`,
+      title: planned.length === 1
+        ? `${allOptional ? "Facultatif aujourd’hui" : "Aujourd’hui"} : ${planned[0].name}`
+        : `${planned.length} séances ${allOptional ? "facultatives " : ""}aujourd’hui`,
+      body: planned.length === 1
+        ? (allOptional ? `${planned[0].sportName || "Séance"} en option, si tu en as envie.` : `${planned[0].sportName} au programme. Bonne séance !`)
+        : `Au programme : ${listNames(planned)}.`,
       url: sessionUrl(planned),
       ids: planned.map(s => s.id)
     };
   }
-  const pending = planned.filter(s => !doneIds.has(s.id));
+  // Pas de relance pour une séance facultative non faite
+  const pending = planned.filter(s => !s.optional && !doneIds.has(s.id));
   if (!pending.length) return null;
   return {
     title: pending.length === 1 ? `${pending[0].name} n’est pas encore faite` : `${pending.length} séances pas encore faites`,
@@ -66,7 +74,7 @@ async function loadProgram(uid, cache) {
   const sessions = sessionsSnap.docs
     .map(d => ({ id: d.id, ...d.data() }))
     .filter(s => sports.has(s.sportId) && Array.isArray(s.days) && s.days.length)
-    .map(s => ({ id: s.id, name: s.name || "Séance", sportId: s.sportId, sportName: sports.get(s.sportId).name || "", days: s.days }));
+    .map(s => ({ id: s.id, name: s.name || "Séance", sportId: s.sportId, sportName: sports.get(s.sportId).name || "", days: s.days, optional: !!s.optional }));
   cache.set(uid, sessions);
   return sessions;
 }

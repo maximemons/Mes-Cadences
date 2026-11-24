@@ -14,6 +14,15 @@ Un carnet d’entraînement personnel, pensé pour le téléphone, qui rappelle 
 - Les séances sont rangées par jour, du lundi au dimanche. Les jours sans séance affichent « Repos ».
 - Une séance peut être prévue plusieurs jours, ou n’avoir aucun jour fixe.
 
+### Séance facultative
+
+Dans l’éditeur de séance, l’option **Séance facultative** marque une séance « en plus » :
+
+- elle reste proposée à ses jours (accueil, semaine du sport, rappel de 6 h), avec une étiquette **Facultative** et un trait pointillé dans la barre de cadence ;
+- elle n’entre pas dans le nombre de séances **prévues** de la semaine ;
+- **effectuée**, elle compte normalement dans l’historique et les statistiques (semaine, mois, semaines d’affilée, histogramme) ;
+- **pas effectuée**, elle ne pénalise rien : aucune séance manquée, aucune relance à 17 h.
+
 ## Mes repères (charges max, VMA…)
 
 Chaque sport a ses repères : charge maximale sur un mouvement, VMA, FTP, etc. Dans un exercice, une intensité en pourcentage est calculée à partir du repère choisi :
@@ -77,7 +86,7 @@ Pour les exercices qui ne se mesurent ni en répétitions, ni en distance, ni en
 - Nom, jours, notes, puis la liste des exercices : séries, intensité, repère, repos (`90` ou `1:30`), charge, consignes et image.
 - Chaque exercice a un type d’effort : **Répétitions** (ex. `10`), **Distance** en km (ex. `5` ou `0,4`) ou **Durée** en minutes (ex. `20` ou `2:30`).
 - En course à pied, une distance à « 80 % de VMA » affiche la vitesse, l’allure et le temps visé (5 km à 80 % d’une VMA de 15 km/h → 12 km/h, 5′00″/km, 25′00″). Une durée affiche la distance approximative parcourue.
-- Dans un sport qui a une VMA, un nouvel exercice est créé en mode Distance avec la VMA déjà sélectionnée.
+- Un nouvel exercice reprend le type d’effort de l’exercice juste au-dessus (après un exercice en Durée, le suivant est en Durée, etc.). Pour le premier exercice d’une séance, dans un sport qui a une VMA, il est créé en mode Distance avec la VMA déjà sélectionnée ; sinon en Répétitions.
 - Les exercices se réordonnent avec les flèches.
 - Les images sont redimensionnées et compressées sur le téléphone avant l’envoi.
 
@@ -85,7 +94,7 @@ Pour les exercices qui ne se mesurent ni en répétitions, ni en distance, ni en
 
 - Dans **Mon compte**, le bouton **Activer les rappels** demande l’autorisation de notifier.
 - À **6 h**, une notification rappelle la ou les séances prévues dans la journée (rien les jours de repos).
-- À **17 h**, si une séance du jour n’est pas encore marquée comme effectuée, une nouvelle notification la rappelle. Elle disparaît d’elle-même si la séance est validée entre-temps.
+- À **17 h**, si une séance du jour n’est pas encore marquée comme effectuée, une nouvelle notification la rappelle (sauf les séances facultatives). Elle disparaît d’elle-même si la séance est validée entre-temps.
 - Un appui sur la notification ouvre la séance (ou l’accueil s’il y en a plusieurs).
 - Le réglage est propre à chaque appareil. Le bouton **Tester** affiche tout de suite une notification.
 - Sur iPhone, les notifications web demandent iOS 16.4 ou plus et l’appli ajoutée à l’écran d’accueil.
@@ -162,7 +171,7 @@ Données Firestore :
 
 ```
 users/{uid}/sports/{id}     nom, icône, couleur, repères
-users/{uid}/sessions/{id}   sportId, nom, jours, notes, exercices
+users/{uid}/sessions/{id}   sportId, nom, jours, facultative, notes, exercices
 users/{uid}/images/{id}     image compressée d’un exercice
 users/{uid}/logs/{id}       séances effectuées (historique)
 users/{uid}/measures/{date} mesures (poids kg, masse grasse %, masse musculaire kg, VMA km/h)

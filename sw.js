@@ -69,7 +69,7 @@ const dayIdx = (d = new Date()) => (d.getDay() + 6) % 7; // 0 = lundi
 
 /* ---------------------------------------------------- Contenu des rappels */
 
-const listNames = list => list.map(s => s.sportName ? `${s.name} (${s.sportName})` : s.name).join(", ");
+const listNames = list => list.map(s => `${s.name}${s.sportName ? ` (${s.sportName}${s.optional ? ", facultative" : ""})` : s.optional ? " (facultative)" : ""}`).join(", ");
 
 const sessionUrl = list => (list.length === 1 && list[0].sportId ? `#/sport/${list[0].sportId}/session/${list[0].id}` : "#/");
 
@@ -81,16 +81,21 @@ function buildReminder(kind, snapshot, now = new Date()) {
   const done = new Set((snapshot.done || {})[today] || []);
 
   if (kind === "morning") {
+    // Les séances facultatives sont proposées le matin, sans être présentées comme obligatoires
+    const allOptional = planned.every(s => s.optional);
     return {
-      title: planned.length === 1 ? `Aujourd’hui : ${planned[0].name}` : `${planned.length} séances aujourd’hui`,
+      title: planned.length === 1
+        ? `${allOptional ? "Facultatif aujourd’hui" : "Aujourd’hui"} : ${planned[0].name}`
+        : `${planned.length} séances ${allOptional ? "facultatives " : ""}aujourd’hui`,
       body: planned.length === 1
-        ? `${planned[0].sportName || "Séance"} au programme. Bonne séance !`
+        ? (allOptional ? `${planned[0].sportName || "Séance"} en option, si tu en as envie.` : `${planned[0].sportName || "Séance"} au programme. Bonne séance !`)
         : `Au programme : ${listNames(planned)}.`,
       url: sessionUrl(planned),
       ids: planned.map(s => s.id)
     };
   }
-  const pending = planned.filter(s => !done.has(s.id));
+  // Pas de relance pour une séance facultative non faite
+  const pending = planned.filter(s => !s.optional && !done.has(s.id));
   if (!pending.length) return null;
   return {
     title: pending.length === 1 ? `${pending[0].name} n’est pas encore faite` : `${pending.length} séances pas encore faites`,

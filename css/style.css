@@ -920,3 +920,47 @@ img { max-width: 100%; display: block; }
 .reminder-icon.is-on { background: color-mix(in srgb, var(--done) 15%, transparent); color: var(--done); }
 .reminder-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .reminder-text span { font-size: .88rem; color: var(--muted); }
+
+/* ---------- Séance facultative ---------- */
+
+/* double classe : passe devant les styles « .xxx-text span » des cartes */
+.opt-tag.opt-tag {
+  align-self: flex-start; display: inline-flex; align-items: center;
+  margin-top: 4px; padding: 1px 8px; border-radius: 999px;
+  border: 1.5px dashed var(--sport, var(--muted));
+  font-size: .72rem; font-weight: 700; line-height: 1.5;
+  color: var(--sport, var(--muted)); background: transparent;
+}
+.session-days .opt-tag.opt-tag { margin-top: 0; }
+.today-card.is-optional:not(.is-done) { border-left-style: dashed; }
+
+.cadence-day.opt .cadence-bar span {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--sport);
+  background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--sport) 22%, transparent) 0 4px, transparent 4px 9px);
+}
+.week-dots span.opt { background: transparent; border: 1.5px dashed var(--sport); color: var(--sport); }
+
+.opt-switch {
+  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+  padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer;
+}
+.opt-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.opt-switch-track {
+  position: relative; width: 44px; height: 26px; margin-top: 2px; border-radius: 999px;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
+  transition: background-color .2s;
+}
+.opt-switch-track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  transition: transform .2s;
+}
+.opt-switch input:checked + .opt-switch-track { background: var(--sport, var(--primary)); box-shadow: none; }
+.opt-switch input:checked + .opt-switch-track::after { transform: translateX(18px); }
+.opt-switch input:focus-visible + .opt-switch-track { outline: 3px solid color-mix(in srgb, var(--primary) 60%, transparent); outline-offset: 2px; }
+.opt-switch-text { display: flex; flex-direction: column; gap: 3px; }
+.opt-switch-text strong { font-size: .98rem; }
+.opt-switch-text span { font-size: .84rem; color: var(--muted); line-height: 1.4; }
+@media (prefers-reduced-motion: reduce) { .opt-switch-track, .opt-switch-track::after { transition: none; } }

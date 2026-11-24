@@ -255,6 +255,10 @@ function setsCount(ex) {
   return Number.isFinite(n) && n > 0 ? Math.min(n, 30) : 1;
 }
 
+// Séance facultative : proposée, mais ni comptée comme prévue ni relancée si elle n'est pas faite
+const isOptional = session => !!session?.optional;
+const optTag = `<span class="opt-tag">Facultative</span>`;
+
 function sportOf(session) {
   return state.sports.find(s => s.id === session.sportId);
 }
@@ -711,7 +715,7 @@ function renderLoading() {
    ========================================================= */
 
 function weekSummary() {
-  const planned = state.sessions.filter(s => sportOf(s)).reduce((n, s) => n + (s.days || []).length, 0);
+  const planned = state.sessions.filter(s => sportOf(s) && !isOptional(s)).reduce((n, s) => n + (s.days || []).length, 0);
   const start = weekStart(Date.now());
   const done = state.logs.filter(l => weekStart(dateKeyToTime(l.date)) === start).length;
   if (!planned && !done) return "";
@@ -753,7 +757,8 @@ function renderHome() {
 
   const todays = state.sessions
     .filter(s => (s.days || []).includes(t) && sportOf(s))
-    .sort((a, b) => (sportOf(a).order || 0) - (sportOf(b).order || 0));
+    .sort((a, b) => (isOptional(a) - isOptional(b)) || (sportOf(a).order || 0) - (sportOf(b).order || 0));
+  const hasMandatory = todays.some(s => !isOptional(s));
 
   let nextHtml = "";
   if (!todays.length) {
@@ -762,7 +767,7 @@ function renderHome() {
       const list = state.sessions.filter(s => (s.days || []).includes(d) && sportOf(s));
       if (list.length) {
         const when = i === 1 ? "Demain" : DAYS[d];
-        nextHtml = `<p class="next-up">Prochaine séance : <strong>${when}</strong>, ${list.map(s => esc(s.name)).join(" et ")}</p>`;
+        nextHtml = `<p class="next-up">Prochaine séance : <strong>${when}</strong>, ${list.map(s => esc(s.name) + (isOptional(s) ? " (facultative)" : "")).join(" et ")}</p>`;
         break;
       }
     }
@@ -773,7 +778,7 @@ function renderHome() {
   view.innerHTML = `
     <section class="today">
       <p class="today-date">${esc(dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1))}</p>
-      <h2 class="display">${todays.length ? "Au programme aujourd’hui" : "Pas de séance prévue aujourd’hui"}</h2>
+      <h2 class="display">${hasMandatory ? "Au programme aujourd’hui" : todays.length ? `Séance${todays.length > 1 ? "s" : ""} facultative${todays.length > 1 ? "s" : ""} aujourd’hui` : "Pas de séance prévue aujourd’hui"}</h2>
       ${weekSummary()}
       ${todays.length ? `
         <div class="today-list">
@@ -784,11 +789,12 @@ function renderHome() {
             const done = (s.exercises || []).reduce((n, ex) => n + Math.min(prog[ex.id] || 0, setsCount(ex)), 0);
             const isDone = logsToday(s.id).length > 0;
             return `
-              <a class="today-card ${isDone ? "is-done" : ""}" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
+              <a class="today-card ${isDone ? "is-done" : ""} ${isOptional(s) ? "is-optional" : ""}" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
                 <span class="sport-badge"><i class="fa-solid ${sp.icon}"></i></span>
                 <span class="today-card-text">
                   <strong>${esc(s.name)}</strong>
                   <span>${esc(sp.name)}, ${(s.exercises || []).length} exercice${(s.exercises || []).length > 1 ? "s" : ""}</span>
+                  ${isOptional(s) ? optTag : ""}
                 </span>
                 ${isDone ? `<span class="done-tag"><i class="fa-solid fa-check"></i> Faite</span>` : ""}
                 ${total && !isDone ? `<span class="mini-progress" aria-label="${done} séries sur ${total}"><span style="width:${Math.round(done / total * 100)}%"></span></span>` : ""}
@@ -802,7 +808,8 @@ function renderHome() {
       <div class="sport-grid">
         ${state.sports.map(sp => {
           const list = sessionsOf(sp.id);
-          const busy = new Set(list.flatMap(s => s.days || []));
+          const busy = new Set(list.filter(s => !isOptional(s)).flatMap(s => s.days || []));
+          const optBusy = new Set(list.filter(isOptional).flatMap(s => s.days || []));
           return `
             <a class="sport-card" href="#/sport/${sp.id}" style="--sport:${sp.color}">
               <span class="sport-badge"><i class="fa-solid ${sp.icon}"></i></span>
@@ -810,8 +817,8 @@ function renderHome() {
                 <strong>${esc(sp.name)}</strong>
                 <span>${list.length} séance${list.length > 1 ? "s" : ""}</span>
               </span>
-              <span class="week-dots" aria-label="Jours d’entraînement : ${esc([...busy].sort().map(d => DAYS[d]).join(", ") || "aucun")}">
-                ${DAYS_SHORT.map((d, i) => `<span class="${busy.has(i) ? "on" : ""} ${i === t ? "today" : ""}">${d}</span>`).join("")}
+              <span class="week-dots" aria-label="Jours d’entraînement : ${esc([...busy].sort().map(d => DAYS[d]).join(", ") || "aucun")}${optBusy.size ? `, facultatif : ${esc([...optBusy].filter(d => !busy.has(d)).sort().map(d => DAYS[d]).join(", ") || "aucun autre jour")}` : ""}">
+                ${DAYS_SHORT.map((d, i) => `<span class="${busy.has(i) ? "on" : optBusy.has(i) ? "opt" : ""} ${i === t ? "today" : ""}">${d}</span>`).join("")}
               </span>
             </a>`;
         }).join("")}
@@ -847,6 +854,7 @@ function renderSport(sport) {
         <span class="session-card-text">
           <strong>${esc(s.name)}</strong>
           <span>${n ? `${n} exercice${n > 1 ? "s" : ""}` : "Aucun exercice"}</span>
+          ${isOptional(s) ? optTag : ""}
         </span>
         <i class="fa-solid fa-chevron-right chevron"></i>
       </a>`;
@@ -857,8 +865,9 @@ function renderSport(sport) {
       <nav class="cadence" aria-label="Semaine">
         ${DAYS.map((d, i) => {
           const count = byDay[i].length;
+          const mandatory = byDay[i].filter(s => !isOptional(s)).length;
           return `
-            <a class="cadence-day ${count ? "on" : ""} ${i === t ? "today" : ""}" href="#day-${i}" data-day="${i}" aria-label="${d} : ${count ? byDay[i].map(s => esc(s.name)).join(", ") : "repos"}">
+            <a class="cadence-day ${mandatory ? "on" : count ? "opt" : ""} ${i === t ? "today" : ""}" href="#day-${i}" data-day="${i}" aria-label="${d} : ${count ? byDay[i].map(s => esc(s.name) + (isOptional(s) ? " (facultative)" : "")).join(", ") : "repos"}">
               <span class="cadence-bar"><span style="height:${count ? Math.min(100, 55 + count * 22) : 14}%"></span></span>
               <span class="cadence-letter">${DAYS_ABBR[i]}</span>
             </a>`;
@@ -942,7 +951,8 @@ function renderSession(sport, session) {
   $("#view").innerHTML = `
     <div class="session-page" style="--sport:${sport.color}">
       <section class="session-meta">
-        <p class="session-days"><i class="fa-regular fa-calendar"></i> ${esc(daysLabel(session.days))}</p>
+        <p class="session-days"><i class="fa-regular fa-calendar"></i> ${esc(daysLabel(session.days))}${isOptional(session) ? optTag : ""}</p>
+        ${isOptional(session) ? `<p class="hint">Séance proposée en plus : si tu la fais, elle compte dans tes statistiques ; sinon, rien n’est perdu.</p>` : ""}
         ${session.notes ? `<p class="session-notes">${esc(session.notes)}</p>` : ""}
         ${total ? `
           <div class="progress" data-progress>
@@ -1460,12 +1470,20 @@ function exerciseBlock(ex, refs) {
     </div>`;
 }
 
-function blankExercise(sport) {
+// mode : type d'effort à reprendre (celui de l'exercice précédent), sinon type par défaut du sport
+function blankExercise(sport, mode = null) {
   const paceRef = (sport?.refs || []).find(isPaceRef);
-  if (paceRef) {
-    return { id: newId(), name: "", sets: 1, mode: "distance", reps: "", distance: "", duration: "", pct: "", refId: paceRef.id, rest: "", goal: "", load: "", notes: "", imageId: null };
+  const base = { id: newId(), name: "", reps: "", distance: "", duration: "", pct: "", refId: "", rest: "", goal: "", load: "", notes: "", imageId: null };
+  if (!EX_MODES.some(m => m.key === mode)) mode = paceRef ? "distance" : "reps";
+  switch (mode) {
+    case "reps":
+      return { ...base, sets: 3, mode, reps: "10", rest: 90 };
+    case "distance":
+    case "time":
+      return { ...base, sets: 1, mode, refId: paceRef?.id || "", rest: paceRef ? "" : 90 };
+    default:
+      return { ...base, sets: paceRef ? 1 : 3, mode, rest: paceRef ? "" : 90 };
   }
-  return { id: newId(), name: "", sets: 3, mode: "reps", reps: "10", distance: "", duration: "", pct: "", refId: "", rest: 90, goal: "", load: "", notes: "", imageId: null };
 }
 
 function openSessionEditor(sport, session = null) {
@@ -1496,6 +1514,15 @@ function openSessionEditor(sport, session = null) {
         </div>
       </fieldset>
 
+      <label class="opt-switch">
+        <input type="checkbox" name="optional" ${session?.optional ? "checked" : ""}>
+        <span class="opt-switch-track" aria-hidden="true"></span>
+        <span class="opt-switch-text">
+          <strong>Séance facultative</strong>
+          <span>Proposée à ses jours, mais pas comptée comme prévue. Faite, elle compte dans tes statistiques ; pas faite, elle ne pénalise rien et n’envoie pas de relance.</span>
+        </span>
+      </label>
+
       <label class="field">
         <span class="field-label">Notes</span>
         <textarea name="notes" rows="2" placeholder="Objectif, échauffement…">${esc(session?.notes || "")}</textarea>
@@ -1523,6 +1550,7 @@ function openSessionEditor(sport, session = null) {
     return {
       name: String(fd.get("name") || "").trim(),
       days: fd.getAll("days").map(Number).sort((a, b) => a - b),
+      optional: fd.get("optional") === "on",
       notes: String(fd.get("notes") || "").trim(),
       exercises: $$(".exb", listEl).map(block => {
         const f = name => $(`[data-f="${name}"]`, block).value.trim();
@@ -1643,7 +1671,10 @@ function openSessionEditor(sport, session = null) {
       $$(".exb", listEl).forEach(bindBlock);
 
       $("[data-add-ex]", el).addEventListener("click", () => {
-        const ex = blankExercise(sport);
+        // Le nouvel exercice reprend le type d'effort de l'exercice juste au-dessus
+        const prevBlock = listEl.lastElementChild;
+        const prevMode = prevBlock ? $("[data-mode]:checked", prevBlock)?.value : null;
+        const ex = blankExercise(sport, prevMode);
         images.set(ex.id, { imageId: null, data: null, removed: false });
         listEl.insertAdjacentHTML("beforeend", exerciseBlock(ex, refs));
         const block = listEl.lastElementChild;
@@ -2511,6 +2542,7 @@ function openCompleteSession(sport, session) {
           sportName: sport.name,
           sportColor: sport.color,
           sportIcon: sport.icon,
+          optional: isOptional(session),
           doneSets: done,
           totalSets: total,
           duration: Number.isFinite(duration) && duration > 0 ? duration : null,
@@ -2610,7 +2642,8 @@ function renderHistory() {
               const feeling = FEELINGS.find(f => f.key === l.feeling);
               const meta = [
                 l.totalSets ? `${l.doneSets} / ${l.totalSets} séries` : "",
-                l.duration ? `${l.duration} min` : ""
+                l.duration ? `${l.duration} min` : "",
+                l.optional ? "facultative" : ""
               ].filter(Boolean).join(", ");
               return `
                 <button type="button" class="log-row" data-log="${esc(l.id)}" style="--sport:${l.sportColor || "var(--primary)"}">
@@ -2648,6 +2681,7 @@ function openLogDetail(log) {
         <p class="log-detail-date">${capitalize(fmtDateKey(log.date, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</p>
         <div class="log-facts">
           <span><i class="fa-solid ${log.sportIcon || "fa-dumbbell"}"></i> ${esc(log.sportName)}</span>
+          ${log.optional ? `<span><i class="fa-regular fa-star"></i> Séance facultative</span>` : ""}
           ${log.totalSets ? `<span><i class="fa-solid fa-list-check"></i> ${log.doneSets} / ${log.totalSets} séries</span>` : ""}
           ${log.duration ? `<span><i class="fa-regular fa-clock"></i> ${log.duration} min</span>` : ""}
           ${feeling ? `<span><i class="fa-regular ${feeling.icon}"></i> ${feeling.label}</span>` : ""}
@@ -2940,7 +2974,7 @@ function refreshReminders(now = false) {
       .filter(s => sportOf(s) && (s.days || []).length)
       .map(s => {
         const sp = sportOf(s);
-        return { id: s.id, name: s.name || "Séance", sportId: sp.id, sportName: sp.name || "", days: s.days };
+        return { id: s.id, name: s.name || "Séance", sportId: sp.id, sportName: sp.name || "", days: s.days, optional: isOptional(s) };
       });
     syncSnapshot({
       sessions,
