@@ -529,11 +529,11 @@ img { max-width: 100%; display: block; }
 .exb-name:focus { border-color: var(--sport) !important; }
 .exb-tools { display: flex; flex: none; }
 .exb-tools .icon-btn { width: 36px; height: 36px; font-size: .9rem; }
-.mode-switch { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 3px; border-radius: 12px; background: var(--surface-2); }
+.mode-switch { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 3px; border-radius: 12px; background: var(--surface-2); }
 .mode-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .mode-switch span {
-  display: block; text-align: center; padding: 8px 4px; border-radius: 9px;
-  font-size: .84rem; font-weight: 700; color: var(--muted); cursor: pointer;
+  display: block; text-align: center; padding: 8px 2px; border-radius: 9px;
+  font-size: .8rem; overflow-wrap: anywhere; font-weight: 700; color: var(--muted); cursor: pointer;
 }
 .mode-switch input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
 .mode-switch input:focus-visible + span { outline: 3px solid color-mix(in srgb, var(--primary) 60%, transparent); outline-offset: 1px; }
@@ -867,4 +867,108 @@ img { max-width: 100%; display: block; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* ---------- Dialogue à plusieurs choix ---------- */
+
+.dialog-actions--stack { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.dialog-actions--stack .link-btn { justify-self: center; }
+.dialog-detail { margin-top: 12px; }
+.conflict-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.conflict-list li {
+  display: flex; justify-content: space-between; gap: 12px; padding: 9px 12px;
+  border-radius: var(--r-sm); background: var(--surface-2); font-size: .92rem;
+}
+.conflict-list li > span:first-child { font-weight: 700; }
+.conflict-list s { color: var(--muted); }
+.conflict-list strong { font-variant-numeric: tabular-nums; }
+.existing-hint { padding: 10px 12px; border-radius: var(--r-sm); background: var(--surface); border: 1px dashed var(--line); }
+
+/* ---------- Pied de panneau à deux actions ---------- */
+
+.foot-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+/* ---------- Modifier une séance de l'historique ---------- */
+
+.edit-ex-list { display: flex; flex-direction: column; border-radius: var(--r-md); background: var(--surface); border: 1px solid var(--line); overflow: hidden; }
+.edit-ex { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--done); }
+.edit-ex:first-child { border-top: 0; }
+.edit-ex.is-partial { box-shadow: inset 3px 0 0 var(--timer); }
+.edit-ex-head { display: flex; flex-direction: column; min-width: 0; }
+.edit-ex-head .muted { font-size: .84rem; }
+.edit-ex-controls { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: center; }
+.stepper { display: inline-flex; align-items: center; gap: 4px; padding: 3px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); }
+.stepper .icon-btn { width: 38px; height: 38px; border-radius: 50%; }
+.stepper .icon-btn:disabled { opacity: .35; cursor: default; }
+.stepper-value { min-width: 78px; text-align: center; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.stepper-value strong { font-family: var(--font-display); font-size: 1.25rem; }
+.stepper-value small { display: block; font-size: .7rem; font-weight: 700; color: var(--muted); }
+.edit-ex-load input {
+  width: 100%; min-height: 44px; padding: 8px 12px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: var(--surface-2); outline: none;
+}
+.edit-ex-load input:focus { border-color: var(--sport); }
+
+/* ---------- Rappels de séance ---------- */
+
+.reminder-card { display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: var(--r-lg); background: var(--surface); border: 1px solid var(--line); }
+.reminder-head { display: flex; gap: 12px; align-items: flex-start; }
+.reminder-icon {
+  flex: none; width: 42px; height: 42px; border-radius: 14px; display: grid; place-items: center;
+  background: var(--surface-2); color: var(--muted); font-size: 1.1rem;
+}
+.reminder-icon.is-on { background: color-mix(in srgb, var(--done) 15%, transparent); color: var(--done); }
+.reminder-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.reminder-text span { font-size: .88rem; color: var(--muted); }
+
+/* ---------- Séance facultative ---------- */
+
+/* double classe : passe devant les styles « .xxx-text span » des cartes */
+.opt-tag.opt-tag {
+  align-self: flex-start; display: inline-flex; align-items: center;
+  margin-top: 4px; padding: 1px 8px; border-radius: 999px;
+  border: 1.5px dashed var(--sport, var(--muted));
+  font-size: .72rem; font-weight: 700; line-height: 1.5;
+  color: var(--sport, var(--muted)); background: transparent;
+}
+.session-days .opt-tag.opt-tag { margin-top: 0; }
+.today-card.is-optional:not(.is-done) { border-left-style: dashed; }
+
+.cadence-day.opt .cadence-bar span {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--sport);
+  background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--sport) 22%, transparent) 0 4px, transparent 4px 9px);
+}
+.week-dots span.opt { background: transparent; border: 1.5px dashed var(--sport); color: var(--sport); }
+
+.opt-switch {
+  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+  padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer;
+}
+.opt-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.opt-switch-track {
+  position: relative; width: 44px; height: 26px; margin-top: 2px; border-radius: 999px;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line);
+  transition: background-color .2s;
+}
+.opt-switch-track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  transition: transform .2s;
+}
+.opt-switch input:checked + .opt-switch-track { background: var(--sport, var(--primary)); box-shadow: none; }
+.opt-switch input:checked + .opt-switch-track::after { transform: translateX(18px); }
+.opt-switch input:focus-visible + .opt-switch-track { outline: 3px solid color-mix(in srgb, var(--primary) 60%, transparent); outline-offset: 2px; }
+.opt-switch-text { display: flex; flex-direction: column; gap: 3px; }
+.opt-switch-text strong { font-size: .98rem; }
+.opt-switch-text span { font-size: .84rem; color: var(--muted); line-height: 1.4; }
+@media (prefers-reduced-motion: reduce) { .opt-switch-track, .opt-switch-track::after { transition: none; } }
+
+/* Jours facultatifs dans l'éditeur de séance */
+.opt-days { margin-top: -4px; padding: 12px 14px; border-radius: 12px; border: 1px dashed var(--line); }
+.opt-days .day-chips { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); }
+.day-chip--opt input:checked + span {
+  background: color-mix(in srgb, var(--sport, var(--primary)) 14%, transparent);
+  border: 1.5px dashed var(--sport, var(--primary)); color: var(--sport, var(--primary));
 }

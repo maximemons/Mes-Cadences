@@ -25,5 +25,10 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
 });
 
+// Clé publique Web Push (console Firebase › Paramètres du projet › Cloud Messaging ›
+// Certificats Web Push › Générer). Sans elle, les rappels ne fonctionnent que lorsque
+// l'appli est ouverte ou réveillée par le navigateur (voir README, « Rappels de séance »).
+export const vapidKey = "";
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });

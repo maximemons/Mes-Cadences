@@ -14,6 +14,17 @@ Un carnet d’entraînement personnel, pensé pour le téléphone, qui rappelle 
 - Les séances sont rangées par jour, du lundi au dimanche. Les jours sans séance affichent « Repos ».
 - Une séance peut être prévue plusieurs jours, ou n’avoir aucun jour fixe.
 
+### Séance facultative
+
+Dans l’éditeur de séance, l’option **Séance facultative** marque une séance « en plus » :
+
+- elle reste proposée à ses jours (accueil, semaine du sport, rappel de 6 h), avec une étiquette **Facultative** et un trait pointillé dans la barre de cadence ;
+- elle n’entre pas dans le nombre de séances **prévues** de la semaine ;
+- **effectuée**, elle compte normalement dans l’historique et les statistiques (semaine, mois, semaines d’affilée, histogramme) ;
+- **pas effectuée**, elle ne pénalise rien : aucune séance manquée, aucune relance à 17 h.
+
+Pour une séance prévue plusieurs jours, la ligne **Facultative le…** permet de choisir les jours concernés : par exemple une séance prévue lundi, mercredi et vendredi, facultative seulement le vendredi. Les autres jours, elle reste une séance prévue comme les autres (comptée, relancée à 17 h si elle n’est pas faite). Par défaut, tous les jours de la séance sont cochés.
+
 ## Mes repères (charges max, VMA…)
 
 Chaque sport a ses repères : charge maximale sur un mouvement, VMA, FTP, etc. Dans un exercice, une intensité en pourcentage est calculée à partir du repère choisi :
@@ -25,13 +36,17 @@ Chaque sport a ses repères : charge maximale sur un mouvement, VMA, FTP, etc. D
 
 Chaque exercice affiche :
 
-- le volume (ex. `3 × 10`, `10 × 400 m`) ;
+- le volume (ex. `3 × 10`, `10 × 400 m`) ; seules les valeurs renseignées s’affichent (sans valeur, on indique simplement `3 séries`) ;
 - l’intensité et la valeur calculée ;
 - le champ **Ma charge**, modifiable directement (ex. `82,5 kg` ou `3′55″/km`), enregistré dans le compte ;
 - une pastille par série : un appui valide la série et **lance automatiquement le temps de repos** ;
 - les consignes et l’image de l’exercice (un appui l’agrandit).
 
 La progression du jour (séries validées) est gardée sur l’appareil et remise à zéro le lendemain.
+
+### Type d’effort « Autre »
+
+Pour les exercices qui ne se mesurent ni en répétitions, ni en distance, ni en durée (étirements, mobilité, gainage libre…), le type **Autre** ne garde que le nombre de séries et un **objectif libre facultatif** (ex. `30 s par côté`, `jusqu’à l’échec`). L’intensité, le repère et le champ charge/temps sont masqués, dans l’éditeur comme dans la séance et l’historique.
 
 ## Minuteur et chrono
 
@@ -49,13 +64,16 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 
 - Onglet **Historique** : séances de la semaine, du mois et nombre de semaines d’affilée avec au moins une séance.
 - Histogramme des séances par semaine sur les 12 dernières semaines.
-- Liste des séances par mois, filtrable par sport ; un appui ouvre le détail (et permet de la supprimer).
+- Liste des séances par mois, filtrable par sport ; un appui ouvre le détail.
+- **Modifier** une séance enregistrée : ajouter ou retirer une série faite sur chaque exercice (une série ajoutée au-delà du programme compte comme une série en plus), corriger la charge, la date, la durée, changer ou retirer le ressenti, ajouter ou modifier le commentaire.
+- **Supprimer** une séance de l’historique.
 
 ## Suivi personnel
 
 - Onglet **Suivi** : poids, taille, masse grasse (%), masse musculaire (kg) et **VMA**, avec l’**IMC calculé** automatiquement et sa catégorie.
 - La VMA est partagée avec le repère « VMA » (en km/h) des sports : la saisir dans le suivi met à jour les allures des séances, et la modifier dans les repères l’ajoute au suivi.
 - Une mesure par jour, modifiable ou supprimable depuis le tableau récapitulatif.
+- Plusieurs saisies le même jour se complètent : les nouvelles valeurs s’ajoutent, les champs laissés vides gardent ce qui avait déjà été envoyé. Si une valeur déjà saisie ce jour-là est différente, une fenêtre propose d’**écraser** ou de **garder les anciennes valeurs**. Le formulaire indique ce qui a déjà été saisi à la date choisie.
 - Graphique d’évolution pour chaque donnée (3 mois, 1 an, tout), avec la zone d’IMC normal.
 - Ces données de santé restent dans l’espace privé du compte ; un bouton permet de supprimer toutes ses mesures.
 
@@ -70,9 +88,41 @@ La progression du jour (séries validées) est gardée sur l’appareil et remis
 - Nom, jours, notes, puis la liste des exercices : séries, intensité, repère, repos (`90` ou `1:30`), charge, consignes et image.
 - Chaque exercice a un type d’effort : **Répétitions** (ex. `10`), **Distance** en km (ex. `5` ou `0,4`) ou **Durée** en minutes (ex. `20` ou `2:30`).
 - En course à pied, une distance à « 80 % de VMA » affiche la vitesse, l’allure et le temps visé (5 km à 80 % d’une VMA de 15 km/h → 12 km/h, 5′00″/km, 25′00″). Une durée affiche la distance approximative parcourue.
-- Dans un sport qui a une VMA, un nouvel exercice est créé en mode Distance avec la VMA déjà sélectionnée.
+- Un nouvel exercice reprend le type d’effort de l’exercice juste au-dessus (après un exercice en Durée, le suivant est en Durée, etc.). Pour le premier exercice d’une séance, dans un sport qui a une VMA, il est créé en mode Distance avec la VMA déjà sélectionnée ; sinon en Répétitions.
 - Les exercices se réordonnent avec les flèches.
 - Les images sont redimensionnées et compressées sur le téléphone avant l’envoi.
+
+## Rappels de séance
+
+- Dans **Mon compte**, le bouton **Activer les rappels** demande l’autorisation de notifier.
+- À **6 h**, une notification rappelle la ou les séances prévues dans la journée (rien les jours de repos).
+- À **17 h**, si une séance du jour n’est pas encore marquée comme effectuée, une nouvelle notification la rappelle (sauf les séances facultatives). Elle disparaît d’elle-même si la séance est validée entre-temps.
+- Un appui sur la notification ouvre la séance (ou l’accueil s’il y en a plusieurs).
+- Le réglage est propre à chaque appareil. Le bouton **Tester** affiche tout de suite une notification.
+- Sur iPhone, les notifications web demandent iOS 16.4 ou plus et l’appli ajoutée à l’écran d’accueil.
+
+### Comment les rappels arrivent
+
+Un navigateur ne peut pas réveiller une page fermée à une heure précise. Trois mécanismes se relaient, sans doublon :
+
+1. **Push serveur** (recommandé) : la fonction `sessionReminders` (dossier `functions/`) tourne toutes les heures et envoie, à 6 h et 17 h heure locale de chaque appareil, une notification par Firebase Cloud Messaging. Fonctionne appli fermée.
+2. **Synchronisation périodique** (Chrome, appli installée) : le navigateur réveille le service worker de temps en temps ; il vérifie s’il faut notifier. L’heure n’est pas garantie.
+3. **Appli ouverte** : minuteurs à 6 h et 17 h, et rattrapage à l’ouverture (entre 6 h et midi, puis entre 17 h et 23 h).
+
+Sans le push serveur, seuls les mécanismes 2 et 3 fonctionnent.
+
+### Mettre en route le push
+
+1. Console Firebase › Paramètres du projet › **Cloud Messaging** › Certificats Web Push : **Générer une paire de clés**, puis coller la clé publique dans `vapidKey` (`js/firebase-config.js`).
+2. Passer le projet sur l’offre **Blaze** (nécessaire pour les fonctions planifiées ; un passage par heure reste dans le quota gratuit).
+3. Déployer :
+
+```bash
+cd functions && npm install && cd ..
+firebase deploy --only functions,firestore:rules,hosting
+```
+
+4. Sur chaque appareil, désactiver puis réactiver les rappels (ou rouvrir l’appli) pour enregistrer son jeton.
 
 ## Compte
 
@@ -112,6 +162,9 @@ js/app.js               authentification, navigation, vues, éditeurs
 js/timer.js             minuteur de repos et chronomètre
 js/charts.js            graphiques SVG (courbes et histogrammes)
 js/templates.js         programmes d’exemple
+js/notifications.js     rappels : autorisation, jeton push, programme envoyé au service worker
+sw.js                   service worker : affichage des rappels, push, clic sur notification
+functions/index.js      fonction planifiée qui envoie les rappels push (6 h et 17 h)
 firestore.rules         règles d’accès par compte
 firebase.json           configuration Firebase Hosting
 ```
@@ -120,10 +173,11 @@ Données Firestore :
 
 ```
 users/{uid}/sports/{id}     nom, icône, couleur, repères
-users/{uid}/sessions/{id}   sportId, nom, jours, notes, exercices
+users/{uid}/sessions/{id}   sportId, nom, jours, facultative, notes, exercices
 users/{uid}/images/{id}     image compressée d’un exercice
 users/{uid}/logs/{id}       séances effectuées (historique)
 users/{uid}/measures/{date} mesures (poids kg, masse grasse %, masse musculaire kg, VMA km/h)
 users/{uid}/maxes/{id}      historique des repères (max, VMA…)
 users/{uid}/profile/main    taille
+users/{uid}/devices/{id}    appareils inscrits aux rappels (jeton push, fuseau horaire)
 ```

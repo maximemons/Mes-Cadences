@@ -3,6 +3,10 @@ import { TEMPLATES } from "./templates.js";
 import { openRestTimer, openTimer } from "./timer.js";
 import { mountChart, mountBarChart } from "./charts.js";
 import {
+  MORNING_HOUR, EVENING_HOUR, notifStatus, pushConfigured, initNotifications,
+  enableNotifications, disableNotifications, stopNotificationsForLogout, testNotification, syncSnapshot
+} from "./notifications.js";
+import {
   onAuthStateChanged,
   signInWithPopup,
   signInWithRedirect,
@@ -151,13 +155,18 @@ function fmtDistance(km) {
   return km >= 1 ? `${fmtNum(km, 2)} km` : `${fmtNum(km * 1000, 0)} m`;
 }
 
-/* Type d'effort d'un exercice : répétitions, distance (km) ou durée */
+/* Type d'effort d'un exercice : répétitions, distance (km), durée,
+   ou « Autre » : seulement des séries, avec un objectif libre facultatif
+   (ex. « 30 s par côté »), sans intensité ni charge. */
 
 const EX_MODES = [
   { key: "reps", label: "Répétitions" },
   { key: "distance", label: "Distance" },
-  { key: "time", label: "Durée" }
+  { key: "time", label: "Durée" },
+  { key: "other", label: "Autre" }
 ];
+
+const seriesLabel = n => `${n} série${n > 1 ? "s" : ""}`;
 
 // "20" → 20 min ; "2:30" → 2 min 30 ; "1h15" → 1 h 15 (résultat en secondes)
 function parseMinutes(str) {
@@ -210,19 +219,24 @@ function exDurationSec(ex) {
   return exMode(ex) === "time" ? parseMinutes(String(ex.reps).replace(/\s*min.*/i, "")) : null;
 }
 
+// Seules les informations renseignées sont affichées : sans valeur, on indique le nombre de séries.
 function volumeLabel(ex) {
   const sets = setsCount(ex);
   const mode = exMode(ex);
-  let unit;
+  let unit = "";
   if (mode === "distance") {
     const d = exDistanceKm(ex);
-    unit = d ? fmtDistance(d) : "? km";
+    if (d) unit = fmtDistance(d);
   } else if (mode === "time") {
     const t = exDurationSec(ex);
-    unit = t ? fmtClock(t) : "? min";
+    if (t) unit = fmtClock(t);
+  } else if (mode === "other") {
+    unit = String(ex.goal || "").trim();
   } else {
-    return `${sets} × ${ex.reps || "?"}`;
+    const reps = String(ex.reps || "").trim();
+    return reps ? `${sets} × ${reps}` : seriesLabel(sets);
   }
+  if (!unit) return seriesLabel(sets);
   return sets > 1 ? `${sets} × ${unit}` : unit;
 }
 
@@ -230,16 +244,41 @@ function isPaceRef(ref) {
   return (ref?.unit || "").trim().toLowerCase() === "km/h";
 }
 
-function daysLabel(days) {
+function daysLabel(days, optionalDays = []) {
   const list = [...(days || [])].sort((a, b) => a - b);
   if (!list.length) return "Sans jour fixe";
-  return list.map(d => DAYS[d]).join(", ");
+  return list.map(d => DAYS[d] + (optionalDays.includes(d) ? " (facultatif)" : "")).join(", ");
 }
 
 function setsCount(ex) {
   const n = parseInt(ex.sets, 10);
   return Number.isFinite(n) && n > 0 ? Math.min(n, 30) : 1;
 }
+
+// Séance facultative : proposée, mais ni comptée comme prévue ni relancée si elle n'est pas faite.
+// Elle peut l'être tous ses jours, ou seulement certains (optionalDays).
+// Sans optionalDays (anciennes séances), « optional » vaut pour tous les jours.
+function optionalDaysOf(session) {
+  if (!session?.optional) return [];
+  const days = session.days || [];
+  if (!Array.isArray(session.optionalDays)) return [...days];
+  return days.filter(d => session.optionalDays.includes(d));
+}
+const isOptionalOn = (session, day) => optionalDaysOf(session).includes(day);
+// Facultative tous ses jours (ou sans jour fixe et marquée facultative)
+function isOptional(session) {
+  if (!session?.optional) return false;
+  const days = session.days || [];
+  return !days.length || optionalDaysOf(session).length === days.length;
+}
+// Facultative certains jours seulement
+const isPartlyOptional = session => !isOptional(session) && optionalDaysOf(session).length > 0;
+// Facultative le jour où elle a été (ou sera) faite ; hors de ses jours, on suit le réglage global
+function isOptionalForDate(session, key) {
+  const d = (new Date(dateKeyToTime(key)).getDay() + 6) % 7;
+  return (session.days || []).includes(d) ? isOptionalOn(session, d) : isOptional(session);
+}
+const optTag = `<span class="opt-tag">Facultative</span>`;
 
 function sportOf(session) {
   return state.sports.find(s => s.id === session.sportId);
@@ -427,6 +466,39 @@ function confirmDialog(message, { confirmLabel = "Confirmer", danger = false } =
     $("[data-no]", wrap).addEventListener("click", () => done(false));
     $("[data-yes]", wrap).addEventListener("click", () => done(true));
     $("[data-yes]", wrap).focus();
+  });
+}
+
+// Dialogue à plusieurs choix : résout la valeur du bouton choisi, ou null si on annule
+function choiceDialog(message, choices, { detail = "" } = {}) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.className = "dialog-backdrop";
+    wrap.innerHTML = `
+      <div class="dialog" role="alertdialog" aria-modal="true" aria-describedby="dialog-msg">
+        <p id="dialog-msg" class="dialog-msg">${esc(message)}</p>
+        ${detail ? `<div class="dialog-detail">${detail}</div>` : ""}
+        <div class="dialog-actions dialog-actions--stack">
+          ${choices.map((c, i) => `<button type="button" class="btn ${c.kind === "primary" ? "btn-primary" : c.kind === "danger" ? "btn-danger" : "btn-ghost"}" data-choice="${i}">${esc(c.label)}</button>`).join("")}
+          <button type="button" class="link-btn" data-no>Annuler</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add("is-open"));
+    const done = value => {
+      document.removeEventListener("keydown", onKey, true);
+      wrap.classList.remove("is-open");
+      setTimeout(() => wrap.remove(), 180);
+      resolve(value);
+    };
+    const onKey = e => {
+      if (e.key === "Escape") { e.stopImmediatePropagation(); done(null); }
+    };
+    document.addEventListener("keydown", onKey, true);
+    wrap.addEventListener("click", e => { if (e.target === wrap) done(null); });
+    $("[data-no]", wrap).addEventListener("click", () => done(null));
+    $$("[data-choice]", wrap).forEach(b => b.addEventListener("click", () => done(choices[+b.dataset.choice].value)));
+    $("[data-choice]", wrap)?.focus();
   });
 }
 
@@ -664,7 +736,7 @@ function renderLoading() {
    ========================================================= */
 
 function weekSummary() {
-  const planned = state.sessions.filter(s => sportOf(s)).reduce((n, s) => n + (s.days || []).length, 0);
+  const planned = state.sessions.filter(sportOf).reduce((n, s) => n + (s.days || []).length - optionalDaysOf(s).length, 0);
   const start = weekStart(Date.now());
   const done = state.logs.filter(l => weekStart(dateKeyToTime(l.date)) === start).length;
   if (!planned && !done) return "";
@@ -706,7 +778,8 @@ function renderHome() {
 
   const todays = state.sessions
     .filter(s => (s.days || []).includes(t) && sportOf(s))
-    .sort((a, b) => (sportOf(a).order || 0) - (sportOf(b).order || 0));
+    .sort((a, b) => (isOptionalOn(a, t) - isOptionalOn(b, t)) || (sportOf(a).order || 0) - (sportOf(b).order || 0));
+  const hasMandatory = todays.some(s => !isOptionalOn(s, t));
 
   let nextHtml = "";
   if (!todays.length) {
@@ -715,7 +788,7 @@ function renderHome() {
       const list = state.sessions.filter(s => (s.days || []).includes(d) && sportOf(s));
       if (list.length) {
         const when = i === 1 ? "Demain" : DAYS[d];
-        nextHtml = `<p class="next-up">Prochaine séance : <strong>${when}</strong>, ${list.map(s => esc(s.name)).join(" et ")}</p>`;
+        nextHtml = `<p class="next-up">Prochaine séance : <strong>${when}</strong>, ${list.map(s => esc(s.name) + (isOptionalOn(s, d) ? " (facultative)" : "")).join(" et ")}</p>`;
         break;
       }
     }
@@ -726,7 +799,7 @@ function renderHome() {
   view.innerHTML = `
     <section class="today">
       <p class="today-date">${esc(dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1))}</p>
-      <h2 class="display">${todays.length ? "Au programme aujourd’hui" : "Pas de séance prévue aujourd’hui"}</h2>
+      <h2 class="display">${hasMandatory ? "Au programme aujourd’hui" : todays.length ? `Séance${todays.length > 1 ? "s" : ""} facultative${todays.length > 1 ? "s" : ""} aujourd’hui` : "Pas de séance prévue aujourd’hui"}</h2>
       ${weekSummary()}
       ${todays.length ? `
         <div class="today-list">
@@ -737,11 +810,12 @@ function renderHome() {
             const done = (s.exercises || []).reduce((n, ex) => n + Math.min(prog[ex.id] || 0, setsCount(ex)), 0);
             const isDone = logsToday(s.id).length > 0;
             return `
-              <a class="today-card ${isDone ? "is-done" : ""}" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
+              <a class="today-card ${isDone ? "is-done" : ""} ${isOptionalOn(s, t) ? "is-optional" : ""}" href="#/sport/${sp.id}/session/${s.id}" style="--sport:${sp.color}">
                 <span class="sport-badge"><i class="fa-solid ${sp.icon}"></i></span>
                 <span class="today-card-text">
                   <strong>${esc(s.name)}</strong>
                   <span>${esc(sp.name)}, ${(s.exercises || []).length} exercice${(s.exercises || []).length > 1 ? "s" : ""}</span>
+                  ${isOptionalOn(s, t) ? optTag : ""}
                 </span>
                 ${isDone ? `<span class="done-tag"><i class="fa-solid fa-check"></i> Faite</span>` : ""}
                 ${total && !isDone ? `<span class="mini-progress" aria-label="${done} séries sur ${total}"><span style="width:${Math.round(done / total * 100)}%"></span></span>` : ""}
@@ -755,7 +829,8 @@ function renderHome() {
       <div class="sport-grid">
         ${state.sports.map(sp => {
           const list = sessionsOf(sp.id);
-          const busy = new Set(list.flatMap(s => s.days || []));
+          const busy = new Set(list.flatMap(s => (s.days || []).filter(d => !isOptionalOn(s, d))));
+          const optBusy = new Set(list.flatMap(optionalDaysOf));
           return `
             <a class="sport-card" href="#/sport/${sp.id}" style="--sport:${sp.color}">
               <span class="sport-badge"><i class="fa-solid ${sp.icon}"></i></span>
@@ -763,8 +838,8 @@ function renderHome() {
                 <strong>${esc(sp.name)}</strong>
                 <span>${list.length} séance${list.length > 1 ? "s" : ""}</span>
               </span>
-              <span class="week-dots" aria-label="Jours d’entraînement : ${esc([...busy].sort().map(d => DAYS[d]).join(", ") || "aucun")}">
-                ${DAYS_SHORT.map((d, i) => `<span class="${busy.has(i) ? "on" : ""} ${i === t ? "today" : ""}">${d}</span>`).join("")}
+              <span class="week-dots" aria-label="Jours d’entraînement : ${esc([...busy].sort().map(d => DAYS[d]).join(", ") || "aucun")}${optBusy.size ? `, facultatif : ${esc([...optBusy].filter(d => !busy.has(d)).sort().map(d => DAYS[d]).join(", ") || "aucun autre jour")}` : ""}">
+                ${DAYS_SHORT.map((d, i) => `<span class="${busy.has(i) ? "on" : optBusy.has(i) ? "opt" : ""} ${i === t ? "today" : ""}">${d}</span>`).join("")}
               </span>
             </a>`;
         }).join("")}
@@ -793,13 +868,16 @@ function renderSport(sport) {
   const floating = list.filter(s => !(s.days || []).length);
   const refs = sport.refs || [];
 
-  const sessionCard = s => {
+  // day : jour de la ligne (null pour « Sans jour fixe »)
+  const sessionCard = (s, day = null) => {
     const n = (s.exercises || []).length;
+    const opt = day === null ? isOptional(s) : isOptionalOn(s, day);
     return `
       <a class="session-card" href="#/sport/${sport.id}/session/${s.id}">
         <span class="session-card-text">
           <strong>${esc(s.name)}</strong>
           <span>${n ? `${n} exercice${n > 1 ? "s" : ""}` : "Aucun exercice"}</span>
+          ${opt ? optTag : ""}
         </span>
         <i class="fa-solid fa-chevron-right chevron"></i>
       </a>`;
@@ -810,8 +888,9 @@ function renderSport(sport) {
       <nav class="cadence" aria-label="Semaine">
         ${DAYS.map((d, i) => {
           const count = byDay[i].length;
+          const mandatory = byDay[i].filter(s => !isOptionalOn(s, i)).length;
           return `
-            <a class="cadence-day ${count ? "on" : ""} ${i === t ? "today" : ""}" href="#day-${i}" data-day="${i}" aria-label="${d} : ${count ? byDay[i].map(s => esc(s.name)).join(", ") : "repos"}">
+            <a class="cadence-day ${mandatory ? "on" : count ? "opt" : ""} ${i === t ? "today" : ""}" href="#day-${i}" data-day="${i}" aria-label="${d} : ${count ? byDay[i].map(s => esc(s.name) + (isOptionalOn(s, i) ? " (facultative)" : "")).join(", ") : "repos"}">
               <span class="cadence-bar"><span style="height:${count ? Math.min(100, 55 + count * 22) : 14}%"></span></span>
               <span class="cadence-letter">${DAYS_ABBR[i]}</span>
             </a>`;
@@ -844,13 +923,13 @@ function renderSport(sport) {
               ${i === t ? `<span class="today-tag">Aujourd’hui</span>` : ""}
             </div>
             <div class="day-sessions">
-              ${byDay[i].length ? byDay[i].map(sessionCard).join("") : `<span class="rest-label">Repos</span>`}
+              ${byDay[i].length ? byDay[i].map(s => sessionCard(s, i)).join("") : `<span class="rest-label">Repos</span>`}
             </div>
           </div>`).join("")}
         ${floating.length ? `
           <div class="day-row" id="day-none">
             <div class="day-label"><span>Sans jour fixe</span></div>
-            <div class="day-sessions">${floating.map(sessionCard).join("")}</div>
+            <div class="day-sessions">${floating.map(s => sessionCard(s)).join("")}</div>
           </div>` : ""}
       </section>
 
@@ -895,7 +974,9 @@ function renderSession(sport, session) {
   $("#view").innerHTML = `
     <div class="session-page" style="--sport:${sport.color}">
       <section class="session-meta">
-        <p class="session-days"><i class="fa-regular fa-calendar"></i> ${esc(daysLabel(session.days))}</p>
+        <p class="session-days"><i class="fa-regular fa-calendar"></i> ${esc(daysLabel(session.days, isPartlyOptional(session) ? optionalDaysOf(session) : []))}${isOptional(session) ? optTag : ""}</p>
+        ${isOptional(session) ? `<p class="hint">Séance proposée en plus : si tu la fais, elle compte dans tes statistiques ; sinon, rien n’est perdu.</p>` : ""}
+        ${isPartlyOptional(session) ? `<p class="hint">Facultative le ${esc(optionalDaysOf(session).map(d => DAYS[d].toLowerCase()).join(", ").replace(/, ([^,]*)$/, " et $1"))} : ces jours-là, si tu la fais, elle compte dans tes statistiques ; sinon, rien n’est perdu.</p>` : ""}
         ${session.notes ? `<p class="session-notes">${esc(session.notes)}</p>` : ""}
         ${total ? `
           <div class="progress" data-progress>
@@ -962,10 +1043,12 @@ function exerciseCard(ex, index, sport, prog) {
   const done = Math.min(prog[ex.id] || 0, sets);
   const target = computeTarget(ex, sport);
   const restSec = parseDuration(ex.rest);
-  const pct = toNum(ex.pct);
+  const mode = exMode(ex);
+  const isOther = mode === "other";
+  const pct = isOther ? NaN : toNum(ex.pct);
 
   let intensity = "";
-  if (target) {
+  if (target && !isOther) {
     intensity = `
       <p class="ex-target">
         <span class="pct">${fmtNum(target.pct)} %</span>
@@ -992,10 +1075,11 @@ function exerciseCard(ex, index, sport, prog) {
           </button>` : ""}
       </div>
 
+      ${isOther ? "" : `
       <label class="ex-load">
-        <span>${exMode(ex) === "reps" ? "Ma charge" : "Mon temps"}</span>
-        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="${exMode(ex) === "reps" ? "ex. 82,5 kg" : "ex. 24′30″ ou 4′50″/km"}" enterkeyhint="done" autocomplete="off">
-      </label>
+        <span>${mode === "reps" ? "Ma charge" : "Mon temps"}</span>
+        <input type="text" data-load value="${esc(ex.load || "")}" placeholder="${mode === "reps" ? "ex. 82,5 kg" : "ex. 24′30″ ou 4′50″/km"}" enterkeyhint="done" autocomplete="off">
+      </label>`}
 
       <div class="ex-sets">
         <div class="set-dots" role="group" aria-label="Séries réalisées">
@@ -1101,6 +1185,7 @@ function createFromTemplate(key) {
         reps: ex.reps || "",
         distance: ex.distance ?? "",
         duration: ex.duration ?? "",
+        goal: ex.goal || "",
         pct: ex.pct ?? "",
         refId: ex.ref ? refIds[ex.ref] : "",
         rest: ex.rest ?? "",
@@ -1364,11 +1449,15 @@ function exerciseBlock(ex, refs) {
           <span class="field-label">Durée (min)</span>
           <input type="text" data-f="duration" value="${fmtClockInput(dur)}" inputmode="decimal" placeholder="20 ou 2:30">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "" : "hidden"}" data-mode-field="other">
+          <span class="field-label">Objectif (facultatif)</span>
+          <input type="text" data-f="goal" value="${esc(ex.goal || "")}" placeholder="30 s par côté" maxlength="40">
+        </label>
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label" data-pct-label>${ref ? `% de ${esc(ref.label)}` : "Intensité (%)"}</span>
           <input type="text" data-f="pct" value="${esc(ex.pct)}" inputmode="decimal" placeholder="80">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label">Calculée sur</span>
           <select data-f="refId">
             <option value="">Aucun repère</option>
@@ -1379,7 +1468,7 @@ function exerciseBlock(ex, refs) {
           <span class="field-label">Repos</span>
           <input type="text" data-f="rest" value="${ex.rest ? fmtDuration(parseDuration(ex.rest)) : ""}" placeholder="1:30" inputmode="numeric">
         </label>
-        <label class="field field--compact">
+        <label class="field field--compact ${mode === "other" ? "hidden" : ""}" data-hide-other>
           <span class="field-label" data-load-label>${mode === "reps" ? "Ma charge" : "Mon temps"}</span>
           <input type="text" data-f="load" value="${esc(ex.load)}" placeholder="${mode === "reps" ? "80 kg" : "24′30″"}">
         </label>
@@ -1405,12 +1494,20 @@ function exerciseBlock(ex, refs) {
     </div>`;
 }
 
-function blankExercise(sport) {
+// mode : type d'effort à reprendre (celui de l'exercice précédent), sinon type par défaut du sport
+function blankExercise(sport, mode = null) {
   const paceRef = (sport?.refs || []).find(isPaceRef);
-  if (paceRef) {
-    return { id: newId(), name: "", sets: 1, mode: "distance", reps: "", distance: "", duration: "", pct: "", refId: paceRef.id, rest: "", load: "", notes: "", imageId: null };
+  const base = { id: newId(), name: "", reps: "", distance: "", duration: "", pct: "", refId: "", rest: "", goal: "", load: "", notes: "", imageId: null };
+  if (!EX_MODES.some(m => m.key === mode)) mode = paceRef ? "distance" : "reps";
+  switch (mode) {
+    case "reps":
+      return { ...base, sets: 3, mode, reps: "10", rest: 90 };
+    case "distance":
+    case "time":
+      return { ...base, sets: 1, mode, refId: paceRef?.id || "", rest: paceRef ? "" : 90 };
+    default:
+      return { ...base, sets: paceRef ? 1 : 3, mode, rest: paceRef ? "" : 90 };
   }
-  return { id: newId(), name: "", sets: 3, mode: "reps", reps: "10", distance: "", duration: "", pct: "", refId: "", rest: 90, load: "", notes: "", imageId: null };
 }
 
 function openSessionEditor(sport, session = null) {
@@ -1418,6 +1515,9 @@ function openSessionEditor(sport, session = null) {
   const refs = sport.refs || [];
   const original = session ? JSON.parse(JSON.stringify(session)) : null;
   const startExercises = session?.exercises?.length ? session.exercises : [blankExercise(sport)];
+  // Jours facultatifs : par défaut tous les jours de la séance
+  const optionalOn = !!session?.optional && (isOptional(session) || isPartlyOptional(session));
+  const startOptDays = optionalOn && (session.days || []).length ? optionalDaysOf(session) : [...DAYS.keys()];
 
   // État des images par exercice : { imageId (existant), data (nouvelle), removed }
   const images = new Map();
@@ -1439,6 +1539,27 @@ function openSessionEditor(sport, session = null) {
               <span aria-hidden="true">${DAYS_ABBR[i]}</span><span class="sr-only">${d}</span>
             </label>`).join("")}
         </div>
+      </fieldset>
+
+      <label class="opt-switch">
+        <input type="checkbox" name="optional" ${optionalOn ? "checked" : ""}>
+        <span class="opt-switch-track" aria-hidden="true"></span>
+        <span class="opt-switch-text">
+          <strong>Séance facultative</strong>
+          <span>Proposée à ses jours, mais pas comptée comme prévue. Faite, elle compte dans tes statistiques ; pas faite, elle ne pénalise rien et n’envoie pas de relance.</span>
+        </span>
+      </label>
+
+      <fieldset class="field opt-days hidden" data-opt-days>
+        <legend class="field-label">Facultative le…</legend>
+        <div class="day-chips">
+          ${DAYS.map((d, i) => `
+            <label class="day-chip day-chip--opt" title="${d} facultatif" data-opt-day="${i}">
+              <input type="checkbox" name="optionalDays" value="${i}" ${startOptDays.includes(i) ? "checked" : ""}>
+              <span aria-hidden="true">${DAYS_ABBR[i]}</span><span class="sr-only">${d}</span>
+            </label>`).join("")}
+        </div>
+        <p class="hint">Décoche les jours où la séance reste prévue normalement.</p>
       </fieldset>
 
       <label class="field">
@@ -1465,9 +1586,16 @@ function openSessionEditor(sport, session = null) {
 
   const read = () => {
     const fd = new FormData(form);
+    const days = fd.getAll("days").map(Number).sort((a, b) => a - b);
+    const optChecked = fd.getAll("optionalDays").map(Number);
+    const optionalDays = fd.get("optional") !== "on" ? []
+      : days.length <= 1 ? days
+      : days.filter(d => optChecked.includes(d));
     return {
       name: String(fd.get("name") || "").trim(),
-      days: fd.getAll("days").map(Number).sort((a, b) => a - b),
+      days,
+      optional: fd.get("optional") === "on" && (!days.length || optionalDays.length > 0),
+      optionalDays,
       notes: String(fd.get("notes") || "").trim(),
       exercises: $$(".exb", listEl).map(block => {
         const f = name => $(`[data-f="${name}"]`, block).value.trim();
@@ -1477,6 +1605,7 @@ function openSessionEditor(sport, session = null) {
         const mode = $("[data-mode]:checked", block)?.value || "reps";
         const distance = toNum(f("distance"));
         const duration = parseMinutes(f("duration"));
+        const isOther = mode === "other";
         return {
           id: block.dataset.exId,
           name: f("name"),
@@ -1485,10 +1614,11 @@ function openSessionEditor(sport, session = null) {
           reps: mode === "reps" ? f("reps") : "",
           distance: mode === "distance" && distance > 0 ? distance : "",
           duration: mode === "time" && duration > 0 ? duration : "",
-          pct: Number.isFinite(pct) ? pct : "",
-          refId: f("refId"),
+          goal: isOther ? f("goal") : "",
+          pct: !isOther && Number.isFinite(pct) ? pct : "",
+          refId: isOther ? "" : f("refId"),
           rest: restSec || "",
-          load: f("load"),
+          load: isOther ? "" : f("load"),
           notes: f("notes")
         };
       })
@@ -1509,6 +1639,26 @@ function openSessionEditor(sport, session = null) {
       hydrateImages(el);
       if (isNew) setTimeout(() => $("input[name=name]", el).focus(), 250);
 
+      // Jours facultatifs : visibles quand la séance est facultative et prévue au moins 2 jours
+      const optSwitch = $("input[name=optional]", el);
+      const optBlock = $("[data-opt-days]", el);
+      const syncOptDays = () => {
+        const days = $$("input[name=days]:checked", el).map(i => Number(i.value));
+        $$("[data-opt-day]", optBlock).forEach(c => c.classList.toggle("hidden", !days.includes(Number(c.dataset.optDay))));
+        optBlock.classList.toggle("hidden", !optSwitch.checked || days.length < 2);
+      };
+      optSwitch.addEventListener("change", syncOptDays);
+      $$("input[name=days]", el).forEach(input => input.addEventListener("change", () => {
+        // Un jour ajouté suit le reste : facultatif si tous les autres jours le sont
+        if (input.checked) {
+          const others = $$("input[name=days]:checked", el).filter(i => i !== input).map(i => i.value);
+          const allOpt = others.every(v => $(`input[name=optionalDays][value="${v}"]`, el).checked);
+          $(`input[name=optionalDays][value="${input.value}"]`, el).checked = !optSwitch.checked || allOpt;
+        }
+        syncOptDays();
+      }));
+      syncOptDays();
+
       const bindBlock = block => {
         const id = block.dataset.exId;
         if (!images.has(id)) images.set(id, { imageId: null, data: null, removed: false });
@@ -1516,10 +1666,11 @@ function openSessionEditor(sport, session = null) {
         const syncMode = (fromUser = false) => {
           const mode = $("[data-mode]:checked", block)?.value || "reps";
           $$("[data-mode-field]", block).forEach(f => f.classList.toggle("hidden", f.dataset.modeField !== mode));
+          $$("[data-hide-other]", block).forEach(f => f.classList.toggle("hidden", mode === "other"));
           $("[data-load-label]", block).textContent = mode === "reps" ? "Ma charge" : "Mon temps";
           $('[data-f="load"]', block).placeholder = mode === "reps" ? "80 kg" : "24′30″";
           const sel = $('[data-f="refId"]', block);
-          if (fromUser && mode !== "reps" && !sel.value) {
+          if (fromUser && (mode === "distance" || mode === "time") && !sel.value) {
             const paceRef = refs.find(isPaceRef);
             if (paceRef) { sel.value = paceRef.id; sel.dispatchEvent(new Event("change")); }
           }
@@ -1585,7 +1736,10 @@ function openSessionEditor(sport, session = null) {
       $$(".exb", listEl).forEach(bindBlock);
 
       $("[data-add-ex]", el).addEventListener("click", () => {
-        const ex = blankExercise(sport);
+        // Le nouvel exercice reprend le type d'effort de l'exercice juste au-dessus
+        const prevBlock = listEl.lastElementChild;
+        const prevMode = prevBlock ? $("[data-mode]:checked", prevBlock)?.value : null;
+        const ex = blankExercise(sport, prevMode);
         images.set(ex.id, { imageId: null, data: null, removed: false });
         listEl.insertAdjacentHTML("beforeend", exerciseBlock(ex, refs));
         const block = listEl.lastElementChild;
@@ -1977,6 +2131,33 @@ function openHeightEditor() {
   });
 }
 
+const MEASURE_FIELDS = [
+  { key: "weight", label: "Poids", unit: "kg" },
+  { key: "fat", label: "Masse grasse", unit: "%" },
+  { key: "muscle", label: "Masse musculaire", unit: "kg" },
+  { key: "vma", label: "VMA", unit: "km/h" }
+];
+
+function numOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = toNum(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Valeurs déjà enregistrées pour une date (mesure du suivi, ou VMA venue des repères), null s'il n'y a rien
+function existingValuesOn(date) {
+  if (!date) return null;
+  const m = state.measures.find(x => x.date === date);
+  const vmaRef = vmaByDate().get(date);
+  const prev = {
+    weight: numOrNull(m?.weight),
+    fat: numOrNull(m?.fat),
+    muscle: numOrNull(m?.muscle),
+    vma: numOrNull(m?.vma) ?? numOrNull(vmaRef)
+  };
+  return Object.values(prev).some(v => v !== null) ? prev : null;
+}
+
 function openMeasureEditor(measure = null, prefill = null) {
   const isNew = !measure;
   const height = state.profile.height || "";
@@ -2024,6 +2205,7 @@ function openMeasureEditor(measure = null, prefill = null) {
       <p class="hint">${linked.length
         ? `La VMA met aussi à jour le repère ${linked.map(x => `« ${esc(x.ref.label)} » (${esc(x.sport.name)})`).join(", ")} : tes allures de séance suivent.`
         : "Astuce : ajoute un repère « VMA » en km/h dans ton sport de course pour que tes allures de séance suivent cette valeur."}</p>
+      <p class="hint existing-hint hidden" data-existing aria-live="polite"></p>
       <p class="bmi-preview" data-bmi aria-live="polite"></p>
       ${!isNew ? `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer cette mesure</button>` : ""}
     </form>`;
@@ -2055,6 +2237,18 @@ function openMeasureEditor(measure = null, prefill = null) {
       };
       form.addEventListener("input", preview);
       preview();
+      const showExisting = () => {
+        const hint = $("[data-existing]", el);
+        const date = $("[name=date]", el).value;
+        const prev = (isNew || date !== measure.date) ? existingValuesOn(date) : null;
+        const filled = prev ? MEASURE_FIELDS.filter(f => prev[f.key] !== null) : [];
+        hint.classList.toggle("hidden", !filled.length);
+        hint.textContent = filled.length
+          ? `Déjà saisi ce jour : ${filled.map(f => `${f.label.toLowerCase()} ${fmtNum(prev[f.key], 2)}${f.unit ? " " + f.unit : ""}`).join(", ")}. Les champs laissés vides garderont ces valeurs.`
+          : "";
+      };
+      $("[name=date]", el).addEventListener("change", showExisting);
+      showExisting();
       if (isNew) setTimeout(() => $("[name=weight]", el).focus(), 250);
 
       $("[data-save]", el).addEventListener("click", async () => {
@@ -2070,17 +2264,39 @@ function openMeasureEditor(measure = null, prefill = null) {
         if (data.weight !== null && !(data.weight >= 20 && data.weight <= 400)) return toast("Poids attendu entre 20 et 400 kg.", true);
         if (data.fat !== null && !(data.fat >= 1 && data.fat <= 80)) return toast("Masse grasse attendue entre 1 et 80 %.", true);
         if (data.muscle !== null && !(data.muscle >= 5 && data.muscle <= 150)) return toast("Masse musculaire attendue entre 5 et 150 kg.", true);
-        if (data.muscle !== null && data.weight !== null && data.muscle >= data.weight) return toast("La masse musculaire doit être inférieure au poids.", true);
         if (h !== null && !(h >= 80 && h <= 250)) return toast("Taille attendue entre 80 et 250 cm.", true);
         if (Object.values(data).some(v => v !== null && !Number.isFinite(v))) return toast("Une valeur n’est pas un nombre.", true);
 
-        const replacing = state.measures.find(m => m.date === d.date);
-        if (replacing && (isNew || measure.date !== d.date)) {
-          if (!await confirmDialog(`Une mesure existe déjà le ${fmtDateKey(d.date)}. La remplacer ?`, { confirmLabel: "Remplacer" })) return;
+        // Nouvelle saisie sur un jour qui a déjà des données : on complète au lieu de remplacer.
+        // Les champs laissés vides gardent l'ancienne valeur ; en cas de valeur différente, on demande.
+        let finalData = data;
+        let merged = false;
+        if (isNew || measure.date !== d.date) {
+          const prev = existingValuesOn(d.date);
+          if (prev) {
+            const conflicts = MEASURE_FIELDS.filter(f => data[f.key] !== null && prev[f.key] !== null && prev[f.key] !== data[f.key]);
+            finalData = Object.fromEntries(MEASURE_FIELDS.map(f => [f.key, data[f.key] ?? prev[f.key]]));
+            merged = true;
+            if (conflicts.length) {
+              const detail = `<ul class="conflict-list">${conflicts.map(f => `
+                <li><span>${esc(f.label)}</span><span><s>${fmtNum(prev[f.key], 2)}</s> → <strong>${fmtNum(data[f.key], 2)}</strong> ${esc(f.unit)}</span></li>`).join("")}</ul>`;
+              const choice = await choiceDialog(
+                `Tu as déjà envoyé ${conflicts.length > 1 ? "ces valeurs" : "cette valeur"} le ${fmtDateKey(d.date)}. Écraser avec la nouvelle saisie ?`,
+                [
+                  { label: "Écraser", value: "overwrite", kind: "primary" },
+                  { label: "Garder les anciennes valeurs", value: "keep" }
+                ],
+                { detail }
+              );
+              if (!choice) return;
+              if (choice === "keep") conflicts.forEach(f => { finalData[f.key] = prev[f.key]; });
+            }
+          }
         }
+        if (finalData.muscle !== null && finalData.weight !== null && finalData.muscle >= finalData.weight) return toast("La masse musculaire doit être inférieure au poids.", true);
 
         const batch = writeBatch(db);
-        batch.set(userDoc("measures", d.date), { date: d.date, ...data, updatedAt: serverTimestamp() });
+        batch.set(userDoc("measures", d.date), { date: d.date, ...finalData, updatedAt: serverTimestamp() });
         if (!isNew && measure.date !== d.date) batch.delete(userDoc("measures", measure.date));
         if (h !== null && h !== toNum(state.profile.height)) {
           batch.set(userDoc("profile", "main"), { height: h, updatedAt: serverTimestamp() }, { merge: true });
@@ -2094,16 +2310,16 @@ function openMeasureEditor(measure = null, prefill = null) {
             batch.delete(userDoc("maxes", maxDocId(ref.id, oldDate)));
             entries = entries.filter(e => e.date !== oldDate);
           }
-          if (data.vma !== null) {
+          if (finalData.vma !== null) {
             batch.set(userDoc("maxes", maxDocId(ref.id, d.date)), {
-              sportId: sport.id, refId: ref.id, date: d.date, value: data.vma, updatedAt: serverTimestamp()
+              sportId: sport.id, refId: ref.id, date: d.date, value: finalData.vma, updatedAt: serverTimestamp()
             });
-            entries = entries.filter(e => e.date !== d.date).concat({ id: maxDocId(ref.id, d.date), date: d.date, value: data.vma });
+            entries = entries.filter(e => e.date !== d.date).concat({ id: maxDocId(ref.id, d.date), date: d.date, value: finalData.vma });
           }
           syncRefValue(sport, ref.id, entries);
         });
 
-        persist(batch.commit(), "Mesure enregistrée");
+        persist(batch.commit(), merged ? "Mesure du jour complétée" : "Mesure enregistrée");
         entry.close();
       });
 
@@ -2391,6 +2607,7 @@ function openCompleteSession(sport, session) {
           sportName: sport.name,
           sportColor: sport.color,
           sportIcon: sport.icon,
+          optional: isOptionalForDate(session, date),
           doneSets: done,
           totalSets: total,
           duration: Number.isFinite(duration) && duration > 0 ? duration : null,
@@ -2401,7 +2618,9 @@ function openCompleteSession(sport, session) {
             return {
               name: ex.name || "Exercice",
               sets: setsCount(ex),
+              plannedSets: setsCount(ex),
               reps: ex.reps || "",
+              mode: exMode(ex),
               volume: volumeLabel(ex),
               doneSets: Math.min(prog[ex.id] || 0, setsCount(ex)),
               load: ex.load || "",
@@ -2488,7 +2707,8 @@ function renderHistory() {
               const feeling = FEELINGS.find(f => f.key === l.feeling);
               const meta = [
                 l.totalSets ? `${l.doneSets} / ${l.totalSets} séries` : "",
-                l.duration ? `${l.duration} min` : ""
+                l.duration ? `${l.duration} min` : "",
+                l.optional ? "facultative" : ""
               ].filter(Boolean).join(", ");
               return `
                 <button type="button" class="log-row" data-log="${esc(l.id)}" style="--sport:${l.sportColor || "var(--primary)"}">
@@ -2526,11 +2746,13 @@ function openLogDetail(log) {
         <p class="log-detail-date">${capitalize(fmtDateKey(log.date, { weekday: "long", day: "numeric", month: "long", year: "numeric" }))}</p>
         <div class="log-facts">
           <span><i class="fa-solid ${log.sportIcon || "fa-dumbbell"}"></i> ${esc(log.sportName)}</span>
+          ${log.optional ? `<span><i class="fa-regular fa-star"></i> Séance facultative</span>` : ""}
           ${log.totalSets ? `<span><i class="fa-solid fa-list-check"></i> ${log.doneSets} / ${log.totalSets} séries</span>` : ""}
           ${log.duration ? `<span><i class="fa-regular fa-clock"></i> ${log.duration} min</span>` : ""}
           ${feeling ? `<span><i class="fa-regular ${feeling.icon}"></i> ${feeling.label}</span>` : ""}
         </div>
         ${log.note ? `<p class="log-note">${esc(log.note)}</p>` : ""}
+        ${log.updatedAt ? `<p class="hint">Modifiée après enregistrement.</p>` : ""}
         ${(log.exercises || []).length ? `
           <div class="table-wrap">
             <table class="data-table data-table--left">
@@ -2540,17 +2762,179 @@ function openLogDetail(log) {
                   <tr class="${ex.doneSets < ex.sets ? "is-partial" : ""}">
                     <td><strong>${esc(ex.name)}</strong><br><span class="muted">${esc(ex.volume || `${ex.sets} × ${ex.reps}`)}${ex.target ? `, ${esc(ex.target)}` : ""}</span></td>
                     <td>${ex.doneSets} / ${ex.sets}</td>
-                    <td>${esc(ex.load) || "–"}</td>
+                    <td>${ex.mode === "other" ? "" : esc(ex.load) || "–"}</td>
                   </tr>`).join("")}
               </tbody>
             </table>
           </div>` : ""}
       </div>`,
-    footer: `<button type="button" class="btn btn-danger-ghost btn-block" data-delete><i class="fa-solid fa-trash"></i> Supprimer de l’historique</button>`,
+    footer: `
+      <div class="foot-actions">
+        <button type="button" class="btn btn-danger-ghost" data-delete><i class="fa-solid fa-trash"></i> Supprimer</button>
+        <button type="button" class="btn btn-primary" data-edit style="--sport:${log.sportColor || "var(--primary)"}"><i class="fa-solid fa-pen"></i> Modifier</button>
+      </div>`,
     onMount(el, entry) {
       $("[data-delete]", el).addEventListener("click", async () => {
         if (!await confirmDialog("Supprimer cette séance de l’historique ?", { confirmLabel: "Supprimer", danger: true })) return;
         persist(deleteDoc(userDoc("logs", log.id)), "Séance retirée de l’historique");
+        entry.close();
+      });
+      $("[data-edit]", el).addEventListener("click", () => {
+        entry.close(() => openLogEditor(log));
+      });
+    }
+  });
+}
+
+// Correction d'une séance enregistrée : séries faites, charges, date, durée, ressenti, note
+function openLogEditor(log) {
+  if (!log) return;
+  const exercises = (log.exercises || []).map(ex => ({
+    ...ex,
+    sets: Math.max(0, +ex.sets || 0),
+    doneSets: Math.max(0, +ex.doneSets || 0),
+    plannedSets: Math.max(0, +ex.plannedSets || +ex.sets || 0)
+  }));
+  const init = {
+    date: log.date,
+    duration: log.duration ? String(log.duration) : "",
+    feeling: log.feeling || "",
+    note: log.note || ""
+  };
+  const snapshot = () => JSON.stringify([read(), exercises.map(ex => [ex.doneSets, ex.sets, ex.load || ""])]);
+  let form;
+  let initial = "";
+
+  const exRow = (ex, i) => `
+    <div class="edit-ex ${ex.doneSets < ex.sets ? "is-partial" : ""}" data-ex="${i}">
+      <div class="edit-ex-head">
+        <strong>${esc(ex.name)}</strong>
+        <span class="muted">${esc(ex.volume || `${ex.sets} × ${ex.reps}`)}</span>
+      </div>
+      <div class="edit-ex-controls">
+        <div class="stepper" role="group" aria-label="Séries faites : ${esc(ex.name)}">
+          <button type="button" class="icon-btn" data-step="-1" aria-label="Retirer une série"><i class="fa-solid fa-minus"></i></button>
+          <span class="stepper-value" aria-live="polite"><strong data-done>${ex.doneSets}</strong> / <span data-sets>${ex.sets}</span><small>séries</small></span>
+          <button type="button" class="icon-btn" data-step="1" aria-label="Ajouter une série"><i class="fa-solid fa-plus"></i></button>
+        </div>
+        ${ex.mode === "other" ? "" : `
+        <label class="edit-ex-load">
+          <span class="sr-only">Charge pour ${esc(ex.name)}</span>
+          <input type="text" data-load value="${esc(ex.load || "")}" placeholder="Charge" autocomplete="off">
+        </label>`}
+      </div>
+    </div>`;
+
+  const body = `
+    <form class="form" data-form novalidate style="--sport:${log.sportColor || "var(--primary)"}">
+      <div class="complete-summary">
+        <span class="complete-count" data-total-done>0<small> / 0</small></span>
+        <span>séries faites. Une série ajoutée au-delà du programme compte comme une série en plus.</span>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Date</span>
+          <input type="date" name="date" value="${esc(init.date)}" max="${localDateKey()}">
+        </label>
+        <label class="field">
+          <span class="field-label">Durée (min)</span>
+          <input type="text" name="duration" inputmode="numeric" value="${esc(init.duration)}" placeholder="60">
+        </label>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Ressenti</legend>
+        <div class="feeling-row">
+          ${FEELINGS.map(f => `
+            <label class="feeling-choice">
+              <input type="radio" name="feeling" value="${f.key}" ${init.feeling === f.key ? "checked" : ""}>
+              <span><i class="fa-regular ${f.icon}"></i>${f.label}</span>
+            </label>`).join("")}
+        </div>
+        <span class="hint">Touche à nouveau un ressenti pour le retirer.</span>
+      </fieldset>
+      <label class="field">
+        <span class="field-label">Commentaire</span>
+        <textarea name="note" rows="3" placeholder="Sensations, douleurs, records…">${esc(init.note)}</textarea>
+      </label>
+      ${exercises.length ? `
+        <fieldset class="field">
+          <legend class="field-label">Exercices</legend>
+          <div class="edit-ex-list">${exercises.map(exRow).join("")}</div>
+        </fieldset>` : ""}
+    </form>`;
+
+  function read() {
+    const fd = new FormData(form);
+    return {
+      date: String(fd.get("date") || ""),
+      duration: String(fd.get("duration") || "").trim(),
+      feeling: String(fd.get("feeling") || ""),
+      note: String(fd.get("note") || "").trim()
+    };
+  }
+
+  openSheet({
+    title: `Modifier : ${log.sessionName}`,
+    body,
+    footer: `<button type="button" class="btn btn-primary btn-block" data-save style="--sport:${log.sportColor || "var(--primary)"}">Enregistrer les modifications</button>`,
+    isDirty: () => snapshot() !== initial,
+    onMount(el, entry) {
+      form = $("[data-form]", el);
+      initial = snapshot();
+
+      const refreshTotal = () => {
+        const done = exercises.reduce((n, ex) => n + ex.doneSets, 0);
+        const total = exercises.reduce((n, ex) => n + ex.sets, 0);
+        $("[data-total-done]", el).innerHTML = `${done}<small> / ${total}</small>`;
+      };
+      refreshTotal();
+
+      $$("[data-ex]", el).forEach(row => {
+        const ex = exercises[+row.dataset.ex];
+        const update = () => {
+          $("[data-done]", row).textContent = ex.doneSets;
+          $("[data-sets]", row).textContent = ex.sets;
+          row.classList.toggle("is-partial", ex.doneSets < ex.sets);
+          $("[data-step='-1']", row).disabled = ex.doneSets === 0;
+          refreshTotal();
+        };
+        $$("[data-step]", row).forEach(b => b.addEventListener("click", () => {
+          const next = Math.max(0, Math.min(50, ex.doneSets + +b.dataset.step));
+          ex.doneSets = next;
+          // Au-delà du programme, la série ajoutée s'ajoute aussi au total ; en retirant, on revient au programme
+          ex.sets = Math.max(ex.plannedSets, next);
+          update();
+        }));
+        $("[data-load]", row)?.addEventListener("input", e => { ex.load = e.target.value.trim(); });
+        update();
+      });
+
+      // Un second appui sur le ressenti sélectionné le retire
+      $$("[name=feeling]", el).forEach(input => {
+        let wasChecked = false;
+        input.parentElement.addEventListener("pointerdown", () => { wasChecked = input.checked; });
+        input.addEventListener("click", () => {
+          if (wasChecked) { input.checked = false; wasChecked = false; }
+        });
+      });
+
+      $("[data-save]", el).addEventListener("click", () => {
+        const d = read();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(d.date)) return toast("Choisis une date.", true);
+        if (d.date > localDateKey()) return toast("La date ne peut pas être dans le futur.", true);
+        const duration = parseInt(d.duration, 10);
+        if (d.duration && !(duration > 0)) return toast("La durée doit être un nombre de minutes.", true);
+        const cleanEx = exercises.map(ex => ({ ...ex, load: ex.load || "" }));
+        persist(updateDoc(userDoc("logs", log.id), {
+          date: d.date,
+          duration: duration > 0 ? duration : null,
+          feeling: d.feeling || null,
+          note: d.note,
+          exercises: cleanEx,
+          doneSets: exercises.reduce((n, ex) => n + ex.doneSets, 0),
+          totalSets: exercises.reduce((n, ex) => n + ex.sets, 0),
+          updatedAt: serverTimestamp()
+        }), "Séance modifiée");
         entry.close();
       });
     }
@@ -2561,6 +2945,63 @@ function openLogDetail(log) {
    Compte
    ========================================================= */
 
+function reminderBlock() {
+  const status = notifStatus();
+  const text = {
+    unsupported: "Ce navigateur ne permet pas les notifications. Sur iPhone, ajoute d’abord l’appli à l’écran d’accueil (Partager, Sur l’écran d’accueil) puis ouvre-la depuis l’icône.",
+    denied: "Les notifications sont bloquées pour ce site. Autorise-les dans les réglages du navigateur, puis reviens ici.",
+    off: `Une notification à ${MORNING_HOUR} h les jours de séance, et une autre à ${EVENING_HOUR} h si la séance n’est pas encore marquée comme faite.`,
+    on: pushConfigured()
+      ? `Activés sur cet appareil : ${MORNING_HOUR} h les jours de séance, ${EVENING_HOUR} h si une séance n’est pas faite.`
+      : `Activés sur cet appareil : ${MORNING_HOUR} h et ${EVENING_HOUR} h. Sans le service push configuré, ils arrivent seulement si l’appli est ouverte ou réveillée par le navigateur.`
+  }[status];
+  return `
+    <section class="reminder-card" data-reminders>
+      <div class="reminder-head">
+        <span class="reminder-icon ${status === "on" ? "is-on" : ""}"><i class="fa-solid ${status === "on" ? "fa-bell" : "fa-bell-slash"}"></i></span>
+        <span class="reminder-text">
+          <strong>Rappels de séance</strong>
+          <span>${esc(text)}</span>
+        </span>
+      </div>
+      ${status === "off" ? `<button type="button" class="btn btn-primary btn-block" data-notif-on><i class="fa-solid fa-bell"></i> Activer les rappels</button>` : ""}
+      ${status === "on" ? `
+        <div class="foot-actions">
+          <button type="button" class="btn btn-ghost" data-notif-test>Tester</button>
+          <button type="button" class="btn btn-ghost" data-notif-off>Désactiver</button>
+        </div>` : ""}
+    </section>`;
+}
+
+function bindReminderBlock(el) {
+  const host = $("[data-reminders]", el);
+  if (!host) return;
+  const refresh = () => {
+    host.outerHTML = reminderBlock();
+    bindReminderBlock(el);
+  };
+  $("[data-notif-on]", host)?.addEventListener("click", async e => {
+    e.currentTarget.disabled = true;
+    try {
+      const res = await enableNotifications();
+      if (!res.ok) toast(res.permission === "denied" ? "Notifications refusées par le navigateur." : "Notifications non autorisées.", true);
+      else {
+        refreshReminders(true);
+        toast(res.push || !pushConfigured() ? "Rappels activés" : "Rappels activés, mais l’inscription au push a échoué.", !res.push && pushConfigured());
+      }
+    } catch {
+      toast("Ce navigateur ne permet pas les notifications.", true);
+    }
+    refresh();
+  });
+  $("[data-notif-off]", host)?.addEventListener("click", async () => {
+    await disableNotifications();
+    toast("Rappels désactivés");
+    refresh();
+  });
+  $("[data-notif-test]", host)?.addEventListener("click", () => testNotification());
+}
+
 function openAccount() {
   const u = state.user;
   openSheet({
@@ -2570,14 +3011,42 @@ function openAccount() {
         ${u.photoURL ? `<img class="account-avatar" src="${esc(u.photoURL)}" alt="" referrerpolicy="no-referrer">` : `<span class="account-avatar account-avatar--empty"><i class="fa-solid fa-user"></i></span>`}
         <p class="account-name">${esc(u.displayName || "Connecté avec Google")}</p>
         <p class="muted">Tes programmes sont liés à ton compte et visibles par toi seul.</p>
-      </div>`,
+      </div>
+      ${reminderBlock()}`,
     footer: `<button type="button" class="btn btn-ghost btn-block" data-logout><i class="fa-solid fa-right-from-bracket"></i> Se déconnecter</button>`,
     onMount(el, entry) {
-      $("[data-logout]", el).addEventListener("click", () => {
+      bindReminderBlock(el);
+      $("[data-logout]", el).addEventListener("click", async e => {
+        e.currentTarget.disabled = true;
+        await stopNotificationsForLogout();
         entry.close(() => signOut(auth));
       });
     }
   });
+}
+
+/* =========================================================
+   Rappels : le service worker reçoit le programme et les séances faites
+   ========================================================= */
+
+let reminderTimer;
+function refreshReminders(now = false) {
+  clearTimeout(reminderTimer);
+  const run = () => {
+    if (!state.user || !state.ready.sports || !state.ready.sessions) return;
+    const today = localDateKey();
+    const sessions = state.sessions
+      .filter(s => sportOf(s) && (s.days || []).length)
+      .map(s => {
+        const sp = sportOf(s);
+        return { id: s.id, name: s.name || "Séance", sportId: sp.id, sportName: sp.name || "", days: s.days, optional: isOptional(s), optionalDays: optionalDaysOf(s) };
+      });
+    syncSnapshot({
+      sessions,
+      done: { [today]: [...new Set(state.logs.filter(l => l.date === today).map(l => l.sessionId))] }
+    });
+  };
+  if (now) run(); else reminderTimer = setTimeout(run, 400);
 }
 
 /* =========================================================
@@ -2628,11 +3097,13 @@ function startListeners() {
     state.sports = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
     state.ready.sports = true;
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userCol("sessions"), snap => {
     state.sessions = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0));
     state.ready.sessions = true;
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userCol("measures"), snap => {
     state.measures = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(m => m.date).sort((a, b) => a.date.localeCompare(b.date));
@@ -2647,6 +3118,7 @@ function startListeners() {
       .filter(l => l.date)
       .sort((a, b) => b.date.localeCompare(a.date) || ((b.createdAt?.seconds ?? Infinity) - (a.createdAt?.seconds ?? Infinity)));
     scheduleRender();
+    refreshReminders();
   }, onError));
   state.unsub.push(onSnapshot(userDoc("profile", "main"), snap => {
     state.profile = snap.exists() ? snap.data() : {};
@@ -2688,6 +3160,7 @@ onAuthStateChanged(auth, user => {
     showScreen("app");
     renderLoading();
     startListeners();
+    initNotifications(user.uid);
   } else {
     stopListeners();
     state.sports = [];
